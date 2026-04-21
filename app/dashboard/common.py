@@ -11,16 +11,22 @@ import pandas as pd
 from app.live_state.cache import LiveStateCache, slugify
 from app.live_state.matcher import LiveStateMatcher
 from app.normalize.normalizer import normalize_events
+from app.storage.tracked_matches import TrackedMatches, merge_tracked_events
 from app.utils.config import resolve_path
 
 
 def load_discovery_events(settings: dict) -> list[dict[str, Any]]:
     path = resolve_path(settings["storage"]["discovery_cache_json"])
-    if not path.exists():
-        return []
-    payload = json.loads(path.read_text(encoding="utf-8") or "{}")
-    events = payload.get("events", [])
-    return events if isinstance(events, list) else []
+    events: list[dict[str, Any]] = []
+    if path.exists():
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+        value = payload.get("events", [])
+        events = value if isinstance(value, list) else []
+    tracked_path = settings.get("storage", {}).get("tracked_matches_json")
+    if tracked_path:
+        tracked = TrackedMatches(resolve_path(tracked_path)).load()
+        events = merge_tracked_events(events, tracked)
+    return events
 
 
 def build_bet_label(question: str, side: str) -> str:

@@ -65,6 +65,7 @@ storage:
   raw_dir: "data/raw"
   log_dir: "data/logs"
   daily_dir: "data/daily"
+  tracked_matches_json: "data/snapshots/tracked_matches.json"
 
 scanner:
   interval_seconds: 5

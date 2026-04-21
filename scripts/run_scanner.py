@@ -22,6 +22,7 @@ from app.normalize.normalizer import normalize_events
 from app.paper_trader.trader import PaperTrader
 from app.risk.limits import RiskManager
 from app.storage.store import Store
+from app.storage.tracked_matches import TrackedMatches, merge_tracked_events
 from app.storage.trades import load_trades
 from app.strategy.date_guard import market_date_is_current_or_unknown
 from app.strategy.hold_confirm import HoldConfirmation
@@ -46,6 +47,7 @@ def main() -> None:
     )
     client = GammaClient(settings, resolve_path(settings["storage"]["raw_dir"]))
     discovery_cache = DiscoveryCache(resolve_path(settings["storage"]["discovery_cache_json"]))
+    tracked_matches = TrackedMatches(resolve_path(settings["storage"]["tracked_matches_json"]))
     live_cache = LiveStateCache(resolve_path(settings["storage"]["live_state_json"]))
     trade_live_state_max_age = int(
         settings.get("validation", {}).get(
@@ -118,10 +120,13 @@ def main() -> None:
                         limit=int(settings["discovery"].get("expand_event_detail_limit", 25)),
                         pregame_window_minutes=int(settings["discovery"].get("pregame_window_minutes", 360)),
                     )
+                tracked = tracked_matches.update_from_discovery(events)
+                events = merge_tracked_events(events, tracked)
                 discovery_cache.save(events)
                 discovery_mode = "full"
             else:
-                events = cached_events
+                tracked = tracked_matches.update_from_discovery(cached_events)
+                events = merge_tracked_events(cached_events, tracked)
                 discovery_mode = "cache"
             markets = normalize_events(events)
             open_and_history = load_trades(resolve_path(settings["storage"]["trade_csv"]))
