@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Polymarket Scanner</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>&gt; Polymarket Scanner</h1>
+      <p id="updated">Waiting for data...</p>
+    </div>
+    <div class="status" id="status"></div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Paper Trading Summary</h2>
+      <div id="trade_summary" class="summary-grid"></div>
+    </section>
+
+    <section>
+      <h2>Open Paper Trades</h2>
+      <div id="open_trades" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Live Matches 75+</h2>
+      <div id="live75" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Confirmed Live Matches Started</h2>
+      <div id="started" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Pregame / Kickoff Watchlist: Polymarket Matches Starting In Next 30 Minutes</h2>
+      <div id="pregame" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Started By Polymarket Time, Not Confirmed By Sports API</h2>
+      <div id="unconfirmed_started" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Unmatched / Diagnostic</h2>
+      <div id="unmatched_diagnostic" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Current Live Price Candidates 0.95-0.99</h2>
+      <div id="candidates" class="table"></div>
+    </section>
+
+    <section>
+      <h2>No-Play Diagnostics</h2>
+      <div id="no_play_summary" class="table"></div>
+      <div id="no_play_rejections" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Proof Of Winning Debug</h2>
+      <div id="proof_debug" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Spread Confirmation Debug</h2>
+      <div id="spread_debug" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Goal Totals Under Debug</h2>
+      <div id="goal_totals_under_debug" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Goal Totals Under Calibration</h2>
+      <div id="goal_totals_under_calibration" class="summary-grid"></div>
+      <div id="goal_totals_under_calibration_line" class="table"></div>
+      <div id="goal_totals_under_calibration_entry_bucket" class="table"></div>
+      <div id="goal_totals_under_calibration_league" class="table"></div>
+      <div id="goal_totals_under_calibration_reason" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Spread Confirmation Calibration</h2>
+      <div id="spread_calibration" class="summary-grid"></div>
+      <div id="spread_calibration_line" class="table"></div>
+      <div id="spread_calibration_side_type" class="table"></div>
+      <div id="spread_calibration_entry_bucket" class="table"></div>
+      <div id="spread_calibration_league" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Proof Of Winning Calibration</h2>
+      <div id="proof_calibration" class="summary-grid"></div>
+      <div id="proof_calibration_market_type" class="table"></div>
+      <div id="proof_calibration_entry_bucket" class="table"></div>
+      <div id="proof_calibration_league" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Resolved Paper Trades</h2>
+      <div id="resolved_trades" class="table"></div>
+    </section>
+  </main>
+
+  <script src="/app.js?v=20260420-1"></script>
+</body>
+</html>

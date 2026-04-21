@@ -1,0 +1,97 @@
+api:
+  gamma_base_url: "https://gamma-api.polymarket.com"
+  clob_base_url: "https://clob.polymarket.com"
+  data_api_base_url: "https://data-api.polymarket.com"
+  sports_ws_url: "wss://sports-api.polymarket.com/ws"
+  clob_market_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+  timeout_seconds: 15
+  retries: 3
+  retry_backoff_seconds: 0.5
+
+discovery:
+  event_tags: ["sports", "soccer"]
+  page_size: 100
+  max_pages_per_tag: 4
+  market_page_size: 100
+  max_market_pages: 30
+  reconcile_interval_seconds: 120
+  related_more_markets_enabled: true
+  related_search_limit_per_cycle: 80
+  expand_event_details_enabled: true
+  expand_event_detail_limit: 25
+  pregame_window_minutes: 360
+
+strategy:
+  sport: "soccer"
+  snapshot_only_live: true
+  min_elapsed: 75
+  max_elapsed: 89
+  min_price: 0.95
+  max_price: 0.99
+  min_price_hold_seconds: 5
+  targets: [0.99, 0.999]
+  stake_usd: 10.0
+  require_live_state: true
+  min_liquidity_usd: 0
+  max_spread: 1.0
+
+proof_of_winning:
+  enabled: true
+  history_limit: 16
+
+spread_confirmation:
+  enabled: true
+  history_limit: 16
+
+goal_totals_under:
+  enabled: true
+  history_limit: 16
+
+risk:
+  max_daily_paper_trades: 100
+  max_simultaneous_open_trades: 20
+  max_entries_per_market: 5
+  cooldown_seconds_per_market: 60
+  kill_switch: false
+
+storage:
+  sqlite_path: "data/db/polymarket_self_hosted.sqlite"
+  snapshot_csv: "data/snapshots/snapshot_log.csv"
+  trade_csv: "data/snapshots/trade_log.csv"
+  live_state_json: "data/snapshots/live_state_cache.json"
+  hold_state_json: "data/snapshots/price_hold_state.json"
+  discovery_cache_json: "data/snapshots/discovery_cache.json"
+  football_research_manifest_json: "data/snapshots/football_research_manifest.json"
+  raw_dir: "data/raw"
+  log_dir: "data/logs"
+  daily_dir: "data/daily"
+
+scanner:
+  interval_seconds: 5
+  full_discovery_every_cycles: 12
+  clob_batch_size: 100
+
+settlement:
+  interval_seconds: 60
+
+football_api:
+  enabled: true
+  base_url: "https://v3.football.api-sports.io"
+  api_key_env: "APISPORTS_KEY"
+  daily_request_limit: 75000
+  mode: "fallback_only"
+  poll_interval_seconds: 5
+  only_when_soccer_elapsed_missing: true
+  detail_capture_enabled: true
+  detail_capture_minute_floor: 70
+  detail_capture_poll_interval_seconds: 30
+
+dashboard:
+  live_state_max_age_seconds: 180
+  snapshot_max_age_seconds: 90
+  show_only_today_open_trades: true
+  require_fresh_live_state_for_live_sections: true
+
+validation:
+  require_fresh_live_state_for_candidates: true
+  trade_live_state_max_age_seconds: 90
