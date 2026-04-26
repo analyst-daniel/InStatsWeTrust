@@ -48,7 +48,7 @@ def test_strategy_engine_populates_totals_metadata_on_observation() -> None:
         {
             "strategy": {
                 "sport": "soccer",
-                "min_elapsed": 75,
+                "min_elapsed": 70,
                 "max_elapsed": 89,
                 "min_price": 0.95,
                 "max_price": 0.99,

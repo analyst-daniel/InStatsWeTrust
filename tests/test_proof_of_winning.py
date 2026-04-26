@@ -61,6 +61,14 @@ def test_activation_accepts_valid_input_inside_window() -> None:
     assert data.time_bucket == TimeBucket.MIN_75_80
 
 
+def test_activation_accepts_minute_72_inside_window() -> None:
+    data = make_input(minute=72.0)
+    decision = activation_decision(data)
+    assert decision.active is True
+    assert decision.reason == "proof_of_winning_activation_ok"
+    assert data.time_bucket == TimeBucket.MIN_70_74
+
+
 def test_activation_rejects_minute_89_and_later() -> None:
     data = make_input(minute=89.0)
     decision = activation_decision(data)

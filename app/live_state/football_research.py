@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.live_state.football_api_client import FootballApiClient
 
@@ -54,7 +55,7 @@ class FootballResearchStore:
         }
         path = fixture_dir / "latest.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        history_name = f"detail_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}.json"
+        history_name = f"detail_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}_{uuid4().hex[:8]}.json"
         (fixture_dir / history_name).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         self._update_manifest(fixture_id, event_title, fixture_payload, statistics, events)
         return path

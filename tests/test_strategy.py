@@ -10,7 +10,7 @@ def settings() -> dict:
     return {
         "strategy": {
             "sport": "soccer",
-            "min_elapsed": 75,
+            "min_elapsed": 70,
             "max_elapsed": 89,
             "min_price": 0.95,
             "max_price": 0.99,
@@ -50,6 +50,8 @@ def live(elapsed: float) -> LiveState:
 
 def test_strategy_enters_only_inside_elapsed_window() -> None:
     engine = StrategyEngine(settings())
+    early = engine.evaluate_market(market(), live(70.2).model_copy(update={"score": "2-0"}))
+    assert any(d.eligible_for_trade for d in early)
     decisions = engine.evaluate_market(market(), live(75.2).model_copy(update={"score": "2-0"}))
     assert any(d.eligible_for_trade for d in decisions)
     late = engine.evaluate_market(market(), live(89.0).model_copy(update={"score": "2-0"}))

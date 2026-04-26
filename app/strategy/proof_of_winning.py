@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class TimeBucket(str, Enum):
+    MIN_70_74 = "70_74"
     MIN_75_80 = "75_80"
     MIN_81_85 = "81_85"
     MIN_86_88 = "86_88"
@@ -66,7 +67,7 @@ class ProofOfWinningInput(BaseModel):
 
     @property
     def within_analysis_window(self) -> bool:
-        return self.minute is not None and 75 <= self.minute < 89
+        return self.minute is not None and 70 <= self.minute < 89
 
     @property
     def has_minimum_required_fields(self) -> bool:
@@ -84,6 +85,8 @@ class ProofOfWinningInput(BaseModel):
 def classify_time_bucket(minute: Optional[float]) -> TimeBucket:
     if minute is None:
         return TimeBucket.OUTSIDE
+    if 70 <= minute < 75:
+        return TimeBucket.MIN_70_74
     if 75 <= minute <= 80:
         return TimeBucket.MIN_75_80
     if 81 <= minute <= 85:

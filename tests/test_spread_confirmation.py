@@ -70,6 +70,25 @@ def test_build_spread_input_populates_score_and_leader_context() -> None:
     assert data.parsed_spread_valid is True
 
 
+def test_build_spread_input_accepts_minute_72_inside_window() -> None:
+    data = build_spread_input(
+        event_id="1",
+        event_slug="j2-iwa-nag-2026-04-19-more-markets",
+        event_title="Iwaki FC vs. AC Nagano Parceiro - More Markets",
+        market_id="m1",
+        market_slug="j2-iwa-nag-2026-04-19-spread-home-2pt5",
+        question="Spread: Iwaki FC (-2.5)",
+        side="AC Nagano Parceiro",
+        minute=72.0,
+        score="1-0",
+        home_team="Iwaki FC",
+        away_team="AC Nagano Parceiro",
+        data_confidence_flag=True,
+    )
+    assert data.time_bucket == SpreadTimeBucket.MIN_70_74
+    assert data.within_analysis_window is True
+
+
 def test_build_spread_input_marks_outside_window_for_89() -> None:
     data = build_spread_input(
         event_id="1",

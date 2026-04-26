@@ -2,6 +2,13 @@ const REFRESH_MS = 10000;
 let latestData = {};
 
 const sections = {
+  diagnostic_funnel_rows: ["stage", "count", "description"],
+  pnl_attribution_strategy: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
+  pnl_attribution_subtype: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
+  pnl_attribution_league: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
+  pnl_attribution_entry_bucket: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
+  pnl_attribution_price_bucket: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
+  pnl_attribution_goal_buffer: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   open_trades: [
     "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd",
     "entry_minute", "entry_score", "period", "entry_reason", "first_hit_99_at", "first_hit_999_at", "max_favorable_price", "status"
@@ -168,6 +175,26 @@ function renderSummary(summary) {
   )).join("");
 }
 
+function renderDiagnosticFunnel(summary) {
+  const target = document.getElementById("diagnostic_funnel_summary");
+  const keys = [
+    "events_seen", "soccer_events", "tracked_matches", "pregame_matches",
+    "started_matches", "matches_75_plus", "raw_price_window_rows", "fresh_price_window_rows",
+    "no_play_rejected_rows", "proof_enter", "spread_enter", "under_enter", "final_trade_eligible"
+  ];
+  target.innerHTML = keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  )).join("");
+}
+
+function renderPnlAttribution(summary) {
+  const target = document.getElementById("pnl_attribution");
+  const keys = ["total", "resolved", "wins", "losses", "pnl_usd", "win_rate"];
+  target.innerHTML = keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  )).join("");
+}
+
 function renderProofCalibration(summary) {
   const target = document.getElementById("proof_calibration");
   const keys = ["total", "resolved", "wins", "losses", "pnl_usd", "win_rate"];
@@ -218,6 +245,8 @@ function render(data) {
       `updated=${data.updated_at} latest_snapshot=${data.health.latest_snapshot || "none"} refresh=10s`;
     renderStatus(data.health);
     renderSummary(data.trade_summary || {});
+    renderDiagnosticFunnel(data.diagnostic_funnel_summary || {});
+    renderPnlAttribution(data.pnl_attribution_summary || {});
     renderProofCalibration(data.proof_of_winning_calibration_summary || {});
     renderSpreadCalibration(data.spread_confirmation_calibration_summary || {});
     renderGoalTotalsUnderCalibration(data.goal_totals_under_calibration_summary || {});

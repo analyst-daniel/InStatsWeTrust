@@ -21,6 +21,7 @@ from app.strategy.goal_totals_under_reporting import (
 )
 from app.strategy.goal_totals_under_runtime import GoalTotalsUnderRuntime
 from app.strategy.proof_of_winning_calibration import summarize_proof_of_winning_trades
+from app.strategy.proof_of_winning_calibration import entry_bucket, infer_league
 from app.strategy.proof_of_winning_runtime import ProofOfWinningRuntime
 from app.strategy.spread_confirmation_calibration import summarize_spread_confirmation_trades
 from app.strategy.spread_confirmation_reporting import build_spread_debug_rows
@@ -84,6 +85,240 @@ def summarize_no_play_rejections(df: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"reason": "group"})
     )
     return grouped.sort_values(["rows", "events"], ascending=[False, False]).reset_index(drop=True)
+
+
+def infer_strategy_family(entry_reason: object, question: object) -> str:
+    reason = str(entry_reason or "").lower()
+    text = str(question or "").lower()
+    if reason.startswith("proof_of_winning"):
+        return "proof"
+    if reason.startswith("spread_confirmation"):
+        return "spread"
+    if reason.startswith("goal_totals_under"):
+        return "under"
+    if "spread:" in text:
+        return "spread"
+    if "o/u" in text or "under" in text:
+        return "under"
+    if "will " in text and " win" in text:
+        return "proof"
+    return "other"
+
+
+def infer_market_subtype(question: object, side: object) -> str:
+    text = str(question or "")
+    side_text = str(side or "")
+    lower = text.lower()
+    if "spread:" in lower:
+        line = ""
+        if "(" in text and ")" in text:
+            line = text.split("(", 1)[1].split(")", 1)[0].strip()
+        sign = "plus" if "+" in side_text or "+" in line else "minus" if "-" in side_text or "-" in line else "unknown"
+        return f"spread_{sign}_{line or 'unknown'}"
+    if "o/u" in lower:
+        line = lower.split("o/u", 1)[1].strip().split()[0] if "o/u" in lower else "unknown"
+        side_norm = "under" if side_text.lower() == "under" else "over" if side_text.lower() == "over" else "unknown"
+        return f"total_{side_norm}_{line}"
+    if "both teams to score" in lower or "btts" in lower:
+        return f"btts_{side_text.lower() or 'unknown'}"
+    if "exact score" in lower:
+        return "exact_score"
+    if "draw" in lower:
+        return f"draw_{side_text.lower() or 'unknown'}"
+    if "will " in lower and " win" in lower:
+        return f"match_winner_{side_text.lower() or 'unknown'}"
+    return "other"
+
+
+def infer_goal_buffer(question: object, score: object, side: object) -> object:
+    text = str(question or "").lower()
+    score_text = str(score or "")
+    try:
+        home, away = [int(part.strip()) for part in score_text.split("-", 1)]
+    except Exception:
+        return ""
+    total_goals = home + away
+    if "o/u" in text and str(side or "").lower() == "under":
+        try:
+            line = float(text.split("o/u", 1)[1].strip().split()[0])
+            return round(line - total_goals, 2)
+        except Exception:
+            return ""
+    if "will " in text and " win" in text:
+        return abs(home - away)
+    return ""
+
+
+def infer_price_bucket(value: object) -> str:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if price < 0.95:
+        return "<0.95"
+    if price < 0.96:
+        return "0.95-0.959"
+    if price < 0.97:
+        return "0.96-0.969"
+    if price < 0.98:
+        return "0.97-0.979"
+    if price < 0.99:
+        return "0.98-0.989"
+    return "0.99+"
+
+
+def summarize_group(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    if df.empty or group_col not in df.columns:
+        return pd.DataFrame()
+    grouped = (
+        df.groupby(group_col, dropna=False)
+        .agg(
+            trades=("trade_id", "count"),
+            wins=("win_flag", "sum"),
+            losses=("loss_flag", "sum"),
+            pnl_usd=("pnl_usd_num", "sum"),
+        )
+        .reset_index()
+        .rename(columns={group_col: "group"})
+    )
+    grouped["pnl_usd"] = grouped["pnl_usd"].fillna(0.0).round(4)
+    grouped["win_rate"] = grouped.apply(
+        lambda row: f"{round((row['wins'] / (row['wins'] + row['losses'])) * 100, 1)}%"
+        if (row["wins"] + row["losses"]) > 0
+        else "",
+        axis=1,
+    )
+    return grouped.sort_values(["trades", "pnl_usd"], ascending=[False, False]).reset_index(drop=True)
+
+
+def summarize_trade_attribution(
+    trades: pd.DataFrame,
+) -> tuple[dict[str, object], pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if trades.empty:
+        empty = pd.DataFrame()
+        return (
+            {"total": 0, "resolved": 0, "wins": 0, "losses": 0, "pnl_usd": 0.0, "win_rate": ""},
+            empty,
+            empty,
+            empty,
+            empty,
+        )
+    frame = trades.copy()
+    frame["resolved_flag"] = frame.get("status", "").astype(str).eq("resolved")
+    resolved = frame[frame["resolved_flag"]].copy()
+    if resolved.empty:
+        empty = pd.DataFrame()
+        return (
+            {"total": int(len(frame)), "resolved": 0, "wins": 0, "losses": 0, "pnl_usd": 0.0, "win_rate": ""},
+            empty,
+            empty,
+            empty,
+            empty,
+        )
+    resolved["pnl_usd_num"] = pd.to_numeric(resolved.get("pnl_usd", ""), errors="coerce").fillna(0.0)
+    resolved["win_flag"] = resolved["pnl_usd_num"].gt(0)
+    resolved["loss_flag"] = resolved["pnl_usd_num"].lt(0)
+    resolved["strategy_family"] = resolved.apply(lambda row: infer_strategy_family(row.get("entry_reason", ""), row.get("question", "")), axis=1)
+    resolved["market_subtype"] = resolved.apply(lambda row: infer_market_subtype(row.get("question", ""), row.get("side", "")), axis=1)
+    resolved["league"] = resolved.get("event_slug", "").astype(str).map(infer_league)
+    resolved["entry_bucket"] = resolved.get("elapsed", "").map(entry_bucket)
+    resolved["price_bucket"] = resolved.get("entry_price", "").map(infer_price_bucket)
+    resolved["goal_buffer"] = resolved.apply(lambda row: infer_goal_buffer(row.get("question", ""), row.get("score", ""), row.get("side", "")), axis=1)
+    resolved["goal_buffer_bucket"] = resolved["goal_buffer"].map(
+        lambda value: "unknown"
+        if value in ("", None)
+        else ("<1" if float(value) < 1 else ("1-1.49" if float(value) < 1.5 else ("1.5-1.99" if float(value) < 2 else "2+")))
+    )
+    wins = int(resolved["win_flag"].sum())
+    losses = int(resolved["loss_flag"].sum())
+    summary = {
+        "total": int(len(frame)),
+        "resolved": int(len(resolved)),
+        "wins": wins,
+        "losses": losses,
+        "pnl_usd": round(float(resolved["pnl_usd_num"].sum()), 4),
+        "win_rate": f"{round((wins / (wins + losses)) * 100, 1)}%" if (wins + losses) else "",
+    }
+    return (
+        summary,
+        summarize_group(resolved, "strategy_family"),
+        summarize_group(resolved, "market_subtype"),
+        summarize_group(resolved, "league"),
+        summarize_group(resolved, "entry_bucket"),
+        summarize_group(resolved, "price_bucket"),
+        summarize_group(resolved, "goal_buffer_bucket"),
+    )
+
+
+def build_diagnostic_funnel(
+    *,
+    events: list[dict],
+    matches: pd.DataFrame,
+    raw_snapshots: pd.DataFrame,
+    snapshots: pd.DataFrame,
+    pregame: pd.DataFrame,
+    started: pd.DataFrame,
+    live75: pd.DataFrame,
+    no_play_latest: pd.DataFrame,
+    proof_debug: pd.DataFrame,
+    spread_debug: pd.DataFrame,
+    goal_totals_under_debug: pd.DataFrame,
+) -> tuple[dict[str, object], pd.DataFrame]:
+    soccer_events = len(matches) if not matches.empty else 0
+    tracked_matches = soccer_events
+    started_matches = len(started)
+    live75_matches = len(live75)
+    pregame_matches = len(pregame)
+    raw_price_window_rows = len(raw_snapshots)
+    fresh_price_window_rows = len(snapshots)
+    no_play_rejected_rows = len(no_play_latest)
+    proof_rows = len(proof_debug)
+    proof_enter = int((proof_debug.get("final_decision", pd.Series(dtype=object)) == "ENTER").sum()) if not proof_debug.empty else 0
+    spread_rows = len(spread_debug)
+    spread_enter = int((spread_debug.get("final_decision", pd.Series(dtype=object)) == "ENTER").sum()) if not spread_debug.empty else 0
+    under_rows = len(goal_totals_under_debug)
+    under_enter = int((goal_totals_under_debug.get("final_decision", pd.Series(dtype=object)) == "ENTER").sum()) if not goal_totals_under_debug.empty else 0
+    final_trade_eligible = max(proof_enter, spread_enter, under_enter, 0)
+
+    summary = {
+        "events_seen": len(events),
+        "soccer_events": soccer_events,
+        "tracked_matches": tracked_matches,
+        "pregame_matches": pregame_matches,
+        "started_matches": started_matches,
+        "matches_75_plus": live75_matches,
+        "raw_price_window_rows": raw_price_window_rows,
+        "fresh_price_window_rows": fresh_price_window_rows,
+        "no_play_rejected_rows": no_play_rejected_rows,
+        "proof_rows": proof_rows,
+        "proof_enter": proof_enter,
+        "spread_rows": spread_rows,
+        "spread_enter": spread_enter,
+        "under_rows": under_rows,
+        "under_enter": under_enter,
+        "final_trade_eligible": final_trade_eligible,
+    }
+    rows = pd.DataFrame(
+        [
+            {"stage": "events_seen", "count": len(events), "description": "all discovery events loaded"},
+            {"stage": "soccer_events", "count": soccer_events, "description": "soccer matches after event normalization"},
+            {"stage": "tracked_matches", "count": tracked_matches, "description": "pregame tracked matches carried forward"},
+            {"stage": "pregame_matches", "count": pregame_matches, "description": "matches starting in next 30 minutes"},
+            {"stage": "started_matches", "count": started_matches, "description": "confirmed live matches started"},
+            {"stage": "matches_75_plus", "count": live75_matches, "description": "live matches in 75+ window"},
+            {"stage": "raw_price_window_rows", "count": raw_price_window_rows, "description": "raw live 0.95-0.99 rows before freshness filter"},
+            {"stage": "fresh_price_window_rows", "count": fresh_price_window_rows, "description": "fresh live 0.95-0.99 rows shown to dashboard"},
+            {"stage": "no_play_rejected_rows", "count": no_play_rejected_rows, "description": "rows rejected by no-play rules"},
+            {"stage": "proof_rows", "count": proof_rows, "description": "proof of winning rows evaluated"},
+            {"stage": "proof_enter", "count": proof_enter, "description": "proof of winning enter decisions"},
+            {"stage": "spread_rows", "count": spread_rows, "description": "spread confirmation rows evaluated"},
+            {"stage": "spread_enter", "count": spread_enter, "description": "spread confirmation enter decisions"},
+            {"stage": "under_rows", "count": under_rows, "description": "goal totals under rows evaluated"},
+            {"stage": "under_enter", "count": under_enter, "description": "goal totals under enter decisions"},
+            {"stage": "final_trade_eligible", "count": final_trade_eligible, "description": "max enter count across strategy diagnostics"},
+        ]
+    )
+    return summary, rows
 
 
 def build_proof_debug_rows(
@@ -257,7 +492,7 @@ def dashboard_state() -> dict:
         minute = pd.to_numeric(matches["match_minute"], errors="coerce")
         minutes_to_start = pd.to_numeric(matches["minutes_to_start"], errors="coerce")
         live = (matches["live"] == True) & (matches["ended"] == False)
-        live75 = matches[live & (minute >= 75)].sort_values("match_minute", ascending=False)
+        live75 = matches[live & (minute >= 70)].sort_values("match_minute", ascending=False)
         schedule_started = (
             (matches["live"] == False)
             & (matches["ended"] == False)
@@ -380,6 +615,28 @@ def dashboard_state() -> dict:
     calibration = summarize_proof_of_winning_trades(trades)
     spread_calibration = summarize_spread_confirmation_trades(trades)
     goal_totals_under_calibration = summarize_goal_totals_under_trades(trades)
+    (
+        attribution_summary,
+        attribution_strategy,
+        attribution_subtype,
+        attribution_league,
+        attribution_entry_bucket,
+        attribution_price_bucket,
+        attribution_goal_buffer,
+    ) = summarize_trade_attribution(trades)
+    funnel_summary, funnel_rows = build_diagnostic_funnel(
+        events=events,
+        matches=matches,
+        raw_snapshots=raw_snapshots,
+        snapshots=snapshots,
+        pregame=pregame,
+        started=started,
+        live75=live75,
+        no_play_latest=no_play_latest,
+        proof_debug=proof_debug,
+        spread_debug=spread_debug,
+        goal_totals_under_debug=goal_totals_under_debug,
+    )
     latest_snapshot = ""
     if not raw_snapshots.empty and "timestamp_utc" in raw_snapshots:
         latest_snapshot = str(raw_snapshots["timestamp_utc"].max())
@@ -457,6 +714,9 @@ def dashboard_state() -> dict:
             "win_rate": trade_summary["win_rate"],
         },
         "trade_summary": trade_summary,
+        "pnl_attribution_summary": attribution_summary,
+        "diagnostic_funnel_summary": funnel_summary,
+        "diagnostic_funnel_rows": compact_rows(funnel_rows, ["stage", "count", "description"], 30),
         "open_trades": compact_rows(sort_if_present(open_trades, "entry_timestamp", ascending=False), trade_cols, 25),
         "resolved_trades": compact_rows(sort_if_present(resolved, "resolved_at", ascending=False), ["win", "loss"] + trade_cols + ["resolved_at", "result", "pnl_usd"], 40),
         "live75": compact_rows(live75, match_cols, 30),
@@ -600,6 +860,12 @@ def dashboard_state() -> dict:
             ["group", "trades", "wins", "losses", "pnl_usd"],
             20,
         ),
+        "pnl_attribution_strategy": compact_rows(attribution_strategy, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 20),
+        "pnl_attribution_subtype": compact_rows(attribution_subtype, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 30),
+        "pnl_attribution_league": compact_rows(attribution_league, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 20),
+        "pnl_attribution_entry_bucket": compact_rows(attribution_entry_bucket, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 20),
+        "pnl_attribution_price_bucket": compact_rows(attribution_price_bucket, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 20),
+        "pnl_attribution_goal_buffer": compact_rows(attribution_goal_buffer, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 20),
         "proof_of_winning_calibration_summary": calibration.summary,
         "proof_calibration_market_type": compact_rows(calibration.by_market_type, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 20),
         "proof_calibration_entry_bucket": compact_rows(calibration.by_entry_bucket, ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"], 20),

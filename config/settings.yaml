@@ -24,7 +24,7 @@ discovery:
 strategy:
   sport: "soccer"
   snapshot_only_live: true
-  min_elapsed: 75
+  min_elapsed: 70
   max_elapsed: 89
   min_price: 0.95
   max_price: 0.99

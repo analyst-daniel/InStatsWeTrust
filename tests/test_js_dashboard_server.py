@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from app.js_dashboard.server import build_proof_debug_rows, summarize_no_play_rejections
+from app.js_dashboard.server import build_diagnostic_funnel, build_proof_debug_rows, summarize_no_play_rejections, summarize_trade_attribution
 from app.live_state.cache import LiveStateCache
 from app.live_state.football_research import FootballResearchStore
 from app.live_state.matcher import LiveStateMatcher
@@ -392,3 +392,71 @@ def test_summarize_no_play_rejections_groups_reason_counts() -> None:
     assert first["rows"] == 2
     assert first["events"] == 1
     assert first["markets"] == 2
+
+
+def test_build_diagnostic_funnel_counts_rows() -> None:
+    summary, rows = build_diagnostic_funnel(
+        events=[{"id": "1"}, {"id": "2"}],
+        matches=pd.DataFrame([{"event_id": "1"}, {"event_id": "2"}]),
+        raw_snapshots=pd.DataFrame([{"event_id": "1"}, {"event_id": "2"}, {"event_id": "2"}]),
+        snapshots=pd.DataFrame([{"event_id": "1"}]),
+        pregame=pd.DataFrame([{"event_id": "1"}]),
+        started=pd.DataFrame([{"event_id": "1"}]),
+        live75=pd.DataFrame(),
+        no_play_latest=pd.DataFrame([{"event_id": "1"}]),
+        proof_debug=pd.DataFrame([{"final_decision": "ENTER"}, {"final_decision": "NO ENTER"}]),
+        spread_debug=pd.DataFrame([{"final_decision": "NO ENTER"}]),
+        goal_totals_under_debug=pd.DataFrame([{"final_decision": "ENTER"}]),
+    )
+
+    assert summary["events_seen"] == 2
+    assert summary["soccer_events"] == 2
+    assert summary["pregame_matches"] == 1
+    assert summary["started_matches"] == 1
+    assert summary["raw_price_window_rows"] == 3
+    assert summary["fresh_price_window_rows"] == 1
+    assert summary["no_play_rejected_rows"] == 1
+    assert summary["proof_enter"] == 1
+    assert summary["under_enter"] == 1
+    assert len(rows) >= 10
+
+
+def test_summarize_trade_attribution_groups_resolved_trades() -> None:
+    trades = pd.DataFrame(
+        [
+            {
+                "trade_id": "t1",
+                "status": "resolved",
+                "entry_reason": "proof_of_winning_enter",
+                "question": "Will Cerezo Osaka win on 2026-04-18?",
+                "side": "Yes",
+                "event_slug": "j1100-cer-kyo-2026-04-18-more-markets",
+                "elapsed": 78,
+                "entry_price": 0.97,
+                "score": "2-0",
+                "pnl_usd": 0.3,
+            },
+            {
+                "trade_id": "t2",
+                "status": "resolved",
+                "entry_reason": "goal_totals_under_enter",
+                "question": "Cerezo Osaka vs Kyoto Sanga FC: O/U 3.5",
+                "side": "Under",
+                "event_slug": "j1100-cer-kyo-2026-04-18-more-markets",
+                "elapsed": 81,
+                "entry_price": 0.96,
+                "score": "1-0",
+                "pnl_usd": -10.0,
+            },
+        ]
+    )
+    summary, by_strategy, by_subtype, by_league, by_entry_bucket, by_price_bucket, by_goal_buffer = summarize_trade_attribution(trades)
+    assert summary["resolved"] == 2
+    assert summary["wins"] == 1
+    assert summary["losses"] == 1
+    assert "proof" in set(by_strategy["group"])
+    assert "under" in set(by_strategy["group"])
+    assert "J1 League" in set(by_league["group"])
+    assert "75-79" in set(by_entry_bucket["group"])
+    assert "0.97-0.979" in set(by_price_bucket["group"])
+    assert "2+" in set(by_goal_buffer["group"])
