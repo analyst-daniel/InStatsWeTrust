@@ -196,6 +196,43 @@ Wejscie koncowe ma reason:
 
 `goal_totals_under_v2_enter`
 
+### Under Buffer Exit Scenario V2
+
+To jest osobny scenariusz kontrolny dla pozycji `Under`. Nie zamyka glownego paper trade'a i nie zmienia glownego PnL. System nadal liczy glowna wersje jako trzymanie pozycji do koncowego rozliczenia.
+
+Rownolegle zapisywany jest wariant V2:
+
+- Co by bylo, gdybysmy sprzedali under w momencie, gdy bufor spada do `0.5`.
+- Wynik jest zapisywany osobno w `data/snapshots/under_buffer_exit_log.csv`.
+- Dashboard pokazuje:
+  - glowny `pnl_usd`,
+  - `pnl_v2_usd`,
+  - sekcje `Under Buffer Exit Scenario`.
+
+Warunki odpalenia scenariusza exit:
+
+- Trade musi byc otwarta pozycja `Under`.
+- `total_goal_buffer <= 0.5`.
+- `elapsed <= 85`.
+- `bid >= 0.95 * entry_price`.
+
+Interpretacja ceny:
+
+- `bid` to cena, po ktorej moglibysmy sprzedac token.
+- `entry_price` to cena zakupu.
+- `bid >= 0.95 * entry_price` oznacza, ze sprzedajemy tylko wtedy, gdy rynek pozwala wyjsc za minimum `95%` ceny zakupu.
+
+Przyklad:
+
+- Wejscie `Under 3.5` przy `2-0`.
+- Po golu jest `2-1`, czyli `total_goals = 3`, `goal_buffer = 0.5`.
+- Jesli minuta `<= 85` i `bid` jest minimum `95%` ceny wejscia, wariant V2 zapisuje sprzedaz.
+
+Cel:
+
+- Ograniczyc straty na underach, gdy pozycja nadal wygrywa, ale kazdy kolejny gol ja zabija.
+- Nie ruszac poznych wygranych przypadkow z minut `86-90`, ktore w backtescie czesto dochodzily do konca.
+
 ## Spread Confirmation V2
 
 Rynek typu:
