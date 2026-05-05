@@ -135,7 +135,7 @@ def test_build_spread_debug_rows_exposes_decision_context(tmp_path) -> None:
     assert len(rows) == 1
     row = rows.iloc[0]
     assert row["final_decision"] == "NO ENTER"
-    assert row["rejection_reason"] == "spread_minus_margin_too_small"
+    assert row["rejection_reason"] == "spread_minus_v2_margin_too_small"
     assert row["spread_line"] == -2.5
     assert row["spread_side_type"] == "minus"
     assert row["selected_team_margin"] == 1

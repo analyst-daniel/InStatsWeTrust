@@ -7,16 +7,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import pandas as pd
+
 from app.normalize.models import PaperTrade
 from app.storage.store import Store
-from app.storage.trades import load_trades
+from app.storage.trades import coerce_trade_row, load_trades
 from app.utils.config import load_settings, resolve_path
 
 
 def main() -> None:
     settings = load_settings()
     trade_path = resolve_path(settings["storage"]["trade_csv"])
+    sqlite_path = resolve_path(settings["storage"]["sqlite_path"])
     trades = load_trades(trade_path)
+    if sqlite_path.exists():
+        store = Store(
+            sqlite_path,
+            resolve_path(settings["storage"]["snapshot_csv"]),
+            trade_path,
+        )
+        with store._connect() as conn:
+            sqlite_trades = pd.read_sql_query("SELECT * FROM trades", conn)
+        if not sqlite_trades.empty:
+            trades = [PaperTrade.model_validate(coerce_trade_row(row)) for row in sqlite_trades.fillna("").to_dict(orient="records")]
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     changed: list[PaperTrade] = []
     for trade in trades:
@@ -27,7 +40,7 @@ def main() -> None:
             trade.pnl_usd = None
             changed.append(trade)
     store = Store(
-        resolve_path(settings["storage"]["sqlite_path"]),
+        sqlite_path,
         resolve_path(settings["storage"]["snapshot_csv"]),
         trade_path,
     )

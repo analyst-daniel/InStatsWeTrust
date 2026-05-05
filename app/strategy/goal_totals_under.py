@@ -259,3 +259,45 @@ def goal_totals_under_enter_decision_pre_stability_v1(data: GoalTotalsUnderInput
         return GoalTotalsUnderEnterDecision(False, "goal_totals_under_no_enter_chaos")
 
     return GoalTotalsUnderEnterDecision(True, "goal_totals_under_pre_stability_ok")
+
+
+def goal_totals_under_enter_decision_score_only_v1(data: GoalTotalsUnderInput) -> GoalTotalsUnderEnterDecision:
+    if not data.within_activation_window:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_minute_outside_window")
+    if not data.parsed_totals_valid:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_invalid_totals_market")
+    if not data.is_under_side:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_wrong_side")
+    if data.red_card_flag or data.red_card_in_last_10min:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_red_card")
+    if data.goal_buffer is None:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_missing_goal_buffer")
+    if data.goal_in_last_3min or data.goal_in_last_5min:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_recent_goal")
+
+    minimum_buffer = required_score_only_buffer(data.time_bucket)
+    if minimum_buffer is None:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_minute_outside_window")
+    if data.goal_buffer < minimum_buffer:
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v1_buffer_too_small")
+
+    return GoalTotalsUnderEnterDecision(True, "goal_totals_under_v1_enter")
+
+
+def goal_totals_under_enter_decision_score_only_v2(data: GoalTotalsUnderInput) -> GoalTotalsUnderEnterDecision:
+    decision = goal_totals_under_enter_decision_score_only_v1(data)
+    if not decision.enter:
+        return decision
+    if not (data.stable_for_2_snapshots or data.stable_for_3_snapshots):
+        return GoalTotalsUnderEnterDecision(False, "goal_totals_under_v2_not_stable")
+    return GoalTotalsUnderEnterDecision(True, "goal_totals_under_v2_enter")
+
+
+def required_score_only_buffer(bucket: UnderTimeBucket) -> float | None:
+    if bucket == UnderTimeBucket.MIN_70_74:
+        return 2.0
+    if bucket == UnderTimeBucket.MIN_75_85:
+        return 1.0
+    if bucket == UnderTimeBucket.MIN_86_88:
+        return 1.0
+    return None

@@ -17,11 +17,14 @@ from app.discovery.related import fetch_related_live_events
 from app.live_state.cache import LiveStateCache
 from app.live_state.football_research import FootballResearchStore
 from app.live_state.matcher import LiveStateMatcher
+from app.market_data.clob_client import ClobClient
 from app.normalize.models import PaperTrade
 from app.normalize.normalizer import normalize_events
+from app.paper_trader.exit_rules import under_buffer_exit_candidates
 from app.paper_trader.trader import PaperTrader
 from app.risk.limits import RiskManager
 from app.storage.store import Store
+from app.storage.under_buffer_exits import UnderBufferExitStore
 from app.storage.tracked_matches import TrackedMatches, merge_tracked_events
 from app.storage.trades import load_trades
 from app.strategy.date_guard import market_date_is_current_or_unknown
@@ -46,6 +49,7 @@ def main() -> None:
         resolve_path(settings["storage"]["trade_csv"]),
     )
     client = GammaClient(settings, resolve_path(settings["storage"]["raw_dir"]))
+    clob_client = ClobClient(settings)
     discovery_cache = DiscoveryCache(resolve_path(settings["storage"]["discovery_cache_json"]))
     tracked_matches = TrackedMatches(resolve_path(settings["storage"]["tracked_matches_json"]))
     live_cache = LiveStateCache(resolve_path(settings["storage"]["live_state_json"]))
@@ -63,6 +67,7 @@ def main() -> None:
             manifest_path=resolve_path(settings["storage"]["football_research_manifest_json"]),
             raw_dir=resolve_path(settings["storage"]["raw_dir"]),
         ),
+        tracked_matches,
     )
     spread_runtime = SpreadConfirmationRuntime(
         settings,
@@ -70,6 +75,7 @@ def main() -> None:
             manifest_path=resolve_path(settings["storage"]["football_research_manifest_json"]),
             raw_dir=resolve_path(settings["storage"]["raw_dir"]),
         ),
+        tracked_matches,
     )
     goal_totals_under_runtime = GoalTotalsUnderRuntime(
         settings,
@@ -77,8 +83,10 @@ def main() -> None:
             manifest_path=resolve_path(settings["storage"]["football_research_manifest_json"]),
             raw_dir=resolve_path(settings["storage"]["raw_dir"]),
         ),
+        tracked_matches,
     )
     trader = PaperTrader(settings, RiskManager(settings))
+    under_exit_store = UnderBufferExitStore(resolve_path(settings["storage"]["under_buffer_exit_csv"]))
     hold = HoldConfirmation(
         resolve_path(settings["storage"]["hold_state_json"]),
         float(settings["strategy"].get("min_price_hold_seconds", 5)),
@@ -140,6 +148,17 @@ def main() -> None:
                 if not market_date_is_current_or_unknown(market):
                     continue
                 live_state = matcher.match(market)
+                if live_state is not None and isinstance(live_state.raw, dict):
+                    fixture = live_state.raw.get("fixture") if isinstance(live_state.raw.get("fixture"), dict) else {}
+                    fixture_id = str(fixture.get("id") or "")
+                    if fixture_id:
+                        tracked_matches.attach_fixture_mapping(
+                            event_id=market.event_id,
+                            event_slug=market.event_slug,
+                            event_title=market.event_title,
+                            fixture_id=fixture_id,
+                            live_slug=live_state.slug,
+                        )
                 if require_fresh_live_state and live_state is None:
                     continue
                 for decision in strategy.evaluate_market(market, live_state):
@@ -175,17 +194,38 @@ def main() -> None:
                     observations.append(decision.observation)
                     latest_by_token[decision.observation.token_id] = decision.observation.price
                     if decision.eligible_for_trade:
+                        fresh_price = fresh_clob_buy_price(clob_client, decision.observation.token_id)
+                        if fresh_price is not None:
+                            decision.observation.price = fresh_price
+                            decision.observation.ask = fresh_price
+                            if decision.observation.bid is not None:
+                                decision.observation.spread = max(fresh_price - decision.observation.bid, 0.0)
+                            if fresh_price < strategy.min_price:
+                                decision.observation.reason = "snapshot_only_fresh_clob_price_below_min"
+                                latest_by_token[decision.observation.token_id] = decision.observation.price
+                                continue
+                            if fresh_price > strategy.max_price:
+                                decision.observation.reason = "snapshot_only_fresh_clob_price_above_max"
+                                latest_by_token[decision.observation.token_id] = decision.observation.price
+                                continue
                         strategy_reason = decision.observation.reason or decision.reason or "trade_eligible"
                         confirmed, hold_reason = hold.check(decision.observation)
                         decision.observation.reason = f"{strategy_reason}_{hold_reason}"
                         if not confirmed:
                             continue
                         eligible += 1
-                        entry = trader.maybe_enter(decision.observation, open_and_history + entries)
+                        max_stake_usd_at_entry = clob_client.max_stake_at_price(decision.observation.token_id, decision.observation.price)
+                        entry = trader.maybe_enter(
+                            decision.observation,
+                            open_and_history + entries,
+                            max_stake_usd_at_entry=max_stake_usd_at_entry,
+                        )
                         if entry:
                             entries.append(entry)
             hold.save()
+            trader.bind_entries(entries)
             updates = trader.update_open_trades(open_and_history + entries, latest_by_token)
+            under_exit_store.upsert_exits(under_buffer_exit_candidates(open_and_history + entries, observations, settings))
             store.append_snapshots(observations)
             store.upsert_trades(entries + updates)
             logger.info(
@@ -205,5 +245,24 @@ def main() -> None:
         if args.once:
             break
         time.sleep(interval)
+
+
+def fresh_clob_buy_price(clob_client: ClobClient, token_id: str) -> float | None:
+    try:
+        payload = clob_client.get_price(token_id, side="BUY")
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return to_float(payload.get("price"))
+
+
+def to_float(value: object) -> float | None:
+    try:
+        if value in ("", None):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 if __name__ == "__main__":
     main()

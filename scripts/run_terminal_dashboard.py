@@ -206,7 +206,7 @@ def add_match_rows(table: Table, rows: pd.DataFrame) -> None:
 
 
 def candidates_table(snapshots: pd.DataFrame) -> Table:
-    table = Table(title="Current Live Price Candidates 0.95-0.99", expand=True)
+    table = Table(title="Current Live Strategy Candidates", expand=True)
     for col in ["event", "bet", "ask", "minute", "score", "reason"]:
         table.add_column(col)
     if snapshots.empty:

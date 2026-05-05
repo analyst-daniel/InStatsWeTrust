@@ -93,3 +93,34 @@ def test_single_shared_team_without_state_date_does_not_match_future_market(tmp_
         timestamp_utc=datetime.now(timezone.utc),
     )
     assert LiveStateMatcher(cache).match(market) is None
+
+
+def test_real_prefix_does_not_match_different_real_fixture(tmp_path: Path) -> None:
+    cache = LiveStateCache(tmp_path / "live.json")
+    cache._states["real-oviedo-vs-elche-cf"] = LiveState(
+        slug="real-oviedo-vs-elche-cf",
+        sport="soccer",
+        live=True,
+        elapsed=75,
+        score="2-0",
+        last_update=datetime.now(timezone.utc),
+        raw={
+            "fixture": {"date": "2026-05-03T10:00:00+00:00"},
+            "teams": {"home": {"name": "Real Oviedo"}, "away": {"name": "Elche CF"}},
+        },
+    )
+    market = NormalizedMarket(
+        event_id="e1",
+        event_slug="lal-bet-ovi-2026-05-03",
+        event_title="Real Betis Balompie vs. Real Oviedo",
+        market_id="m1",
+        question="Will Real Betis Balompie vs. Real Oviedo end in a draw?",
+        sport="soccer",
+        token_ids=["a", "b"],
+        yes_token_id="a",
+        no_token_id="b",
+        outcomes=["Yes", "No"],
+        start_time="2026-05-03T19:00:00+00:00",
+        timestamp_utc=datetime.now(timezone.utc),
+    )
+    assert LiveStateMatcher(cache).match(market) is None

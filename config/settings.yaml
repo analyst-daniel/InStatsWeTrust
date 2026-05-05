@@ -26,7 +26,7 @@ strategy:
   snapshot_only_live: true
   min_elapsed: 70
   max_elapsed: 89
-  min_price: 0.95
+  min_price: 0.60
   max_price: 0.99
   min_price_hold_seconds: 5
   targets: [0.99, 0.999]
@@ -38,21 +38,44 @@ strategy:
 proof_of_winning:
   enabled: true
   history_limit: 16
+  stats_lite_min_entry_price: 0.85
+  score_events_enabled: true
+  score_events_min_entry_price: 0.90
+  score_events_min_elapsed: 75
+  no_recent_goal_minutes: 5
 
 spread_confirmation:
   enabled: true
   history_limit: 16
+  score_only_v2_enabled: true
 
 goal_totals_under:
   enabled: true
   history_limit: 16
+  min_entry_price: 0.60
+  score_only_v2_enabled: true
+  allow_score_only_fallback: false
+  max_clock_drift_minutes: 12
+
+under_buffer_exit:
+  enabled: true
+  max_goal_buffer: 0.5
+  max_elapsed: 85
+  min_bid_to_entry_ratio: 0.95
 
 risk:
-  max_daily_paper_trades: 100
-  max_simultaneous_open_trades: 20
+  max_daily_paper_trades: 1000000
+  max_simultaneous_open_trades: 1000000
   max_entries_per_market: 5
   cooldown_seconds_per_market: 60
   kill_switch: false
+
+capital_processes:
+  enabled: true
+  start_balance: 10.0
+  target_balance: 21.0
+  max_active_processes: 10
+  allow_open_new_when_all_funds_locked: true
 
 storage:
   sqlite_path: "data/db/polymarket_self_hosted.sqlite"
@@ -66,6 +89,9 @@ storage:
   log_dir: "data/logs"
   daily_dir: "data/daily"
   tracked_matches_json: "data/snapshots/tracked_matches.json"
+  capital_processes_json: "data/snapshots/capital_processes.json"
+  capital_high_watermark_json: "data/snapshots/capital_high_watermark.json"
+  under_buffer_exit_csv: "data/snapshots/under_buffer_exit_log.csv"
 
 scanner:
   interval_seconds: 5
@@ -85,6 +111,7 @@ football_api:
   only_when_soccer_elapsed_missing: true
   detail_capture_enabled: true
   detail_capture_minute_floor: 70
+  detail_capture_priority_minute_floor: 60
   detail_capture_poll_interval_seconds: 30
 
 dashboard:

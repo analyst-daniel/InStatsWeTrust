@@ -283,6 +283,32 @@ def spread_plus_enter_decision_pre_stability_v1(data: SpreadConfirmationInput) -
     return SpreadEnterDecision(True, "spread_plus_pre_stability_ok")
 
 
+def spread_plus_enter_decision_score_only_v2(data: SpreadConfirmationInput) -> SpreadEnterDecision:
+    if not data.within_analysis_window:
+        return SpreadEnterDecision(False, "spread_plus_v2_minute_outside_window")
+    if not data.parsed_spread_valid:
+        return SpreadEnterDecision(False, "spread_plus_v2_invalid_spread_market")
+    if data.selected_side_type != SpreadSideType.PLUS:
+        return SpreadEnterDecision(False, "spread_plus_v2_wrong_side_type")
+    if data.selected_line not in {1.5, 2.5, 3.5, 4.5}:
+        return SpreadEnterDecision(False, "spread_plus_v2_unsupported_line")
+    if data.leader_red_card or data.trailing_red_card or data.red_card_in_last_10min:
+        return SpreadEnterDecision(False, "spread_plus_v2_red_card")
+    if data.goal_in_last_3min or data.goal_in_last_5min:
+        return SpreadEnterDecision(False, "spread_plus_v2_recent_goal")
+    margin = selected_team_margin(data)
+    if margin is None:
+        return SpreadEnterDecision(False, "spread_plus_v2_missing_score_context")
+    minimum_margin = required_margin_for_plus_line_v2(data.selected_line)
+    if minimum_margin is None:
+        return SpreadEnterDecision(False, "spread_plus_v2_unsupported_line")
+    if margin < minimum_margin:
+        return SpreadEnterDecision(False, "spread_plus_v2_margin_too_small")
+    if not (data.stable_for_2_snapshots or data.stable_for_3_snapshots):
+        return SpreadEnterDecision(False, "spread_plus_v2_not_stable")
+    return SpreadEnterDecision(True, "spread_plus_v2_enter")
+
+
 def selected_team_has_red_card(data: SpreadConfirmationInput) -> bool:
     if normalize_name(data.selected_team) == normalize_name(data.leader_team):
         return data.leader_red_card
@@ -381,6 +407,32 @@ def spread_minus_enter_decision_pre_stability_v1(data: SpreadConfirmationInput) 
     return SpreadEnterDecision(True, "spread_minus_pre_stability_ok")
 
 
+def spread_minus_enter_decision_score_only_v2(data: SpreadConfirmationInput) -> SpreadEnterDecision:
+    if not data.within_analysis_window:
+        return SpreadEnterDecision(False, "spread_minus_v2_minute_outside_window")
+    if not data.parsed_spread_valid:
+        return SpreadEnterDecision(False, "spread_minus_v2_invalid_spread_market")
+    if data.selected_side_type != SpreadSideType.MINUS:
+        return SpreadEnterDecision(False, "spread_minus_v2_wrong_side_type")
+    if data.selected_line not in {-1.5, -2.5, -3.5, -4.5}:
+        return SpreadEnterDecision(False, "spread_minus_v2_unsupported_line")
+    if data.leader_red_card or data.trailing_red_card or data.red_card_in_last_10min:
+        return SpreadEnterDecision(False, "spread_minus_v2_red_card")
+    if data.goal_in_last_3min or data.goal_in_last_5min:
+        return SpreadEnterDecision(False, "spread_minus_v2_recent_goal")
+    margin = selected_team_margin(data)
+    if margin is None:
+        return SpreadEnterDecision(False, "spread_minus_v2_missing_score_context")
+    required_margin = required_margin_for_minus_line_v2(data.selected_line)
+    if required_margin is None:
+        return SpreadEnterDecision(False, "spread_minus_v2_unsupported_line")
+    if margin < required_margin:
+        return SpreadEnterDecision(False, "spread_minus_v2_margin_too_small")
+    if not (data.stable_for_2_snapshots or data.stable_for_3_snapshots):
+        return SpreadEnterDecision(False, "spread_minus_v2_not_stable")
+    return SpreadEnterDecision(True, "spread_minus_v2_enter")
+
+
 def required_margin_for_minus_line(line: Optional[float]) -> Optional[int]:
     if line == -1.5:
         return 2
@@ -390,6 +442,22 @@ def required_margin_for_minus_line(line: Optional[float]) -> Optional[int]:
         return 4
     if line == -4.5:
         return 5
+    return None
+
+
+def required_margin_for_minus_line_v2(line: Optional[float]) -> Optional[int]:
+    if line is None or line >= 0:
+        return None
+    if line in {-1.5, -2.5, -3.5, -4.5}:
+        return int(abs(line)) + 2
+    return None
+
+
+def required_margin_for_plus_line_v2(line: Optional[float]) -> Optional[int]:
+    if line is None or line <= 0:
+        return None
+    if line in {1.5, 2.5, 3.5, 4.5}:
+        return -(int(line) - 1)
     return None
 
 

@@ -1,8 +1,10 @@
 from app.strategy.spread_confirmation import (
     SpreadSideType,
     spread_minus_activation_decision,
+    spread_minus_enter_decision_score_only_v2,
     spread_minus_enter_decision_v1,
     spread_plus_activation_decision,
+    spread_plus_enter_decision_score_only_v2,
     spread_plus_enter_decision_v1,
     SpreadTimeBucket,
     SpreadConfirmationInput,
@@ -229,6 +231,28 @@ def test_spread_plus_enter_rejects_not_stable() -> None:
     assert decision.reason == "spread_plus_no_enter_not_stable"
 
 
+def test_spread_plus_score_only_v2_requires_one_goal_buffer() -> None:
+    decision = spread_plus_enter_decision_score_only_v2(make_plus_input())
+    assert decision.enter is False
+    assert decision.reason == "spread_plus_v2_margin_too_small"
+
+
+def test_spread_plus_score_only_v2_accepts_plus_two_point_five_losing_by_one() -> None:
+    decision = spread_plus_enter_decision_score_only_v2(
+        make_plus_input(
+            question="Spread: Iwaki FC (-2.5)",
+            spread_line=-2.5,
+            selected_line=2.5,
+            score="1-0",
+            home_goals=1,
+            away_goals=0,
+            goal_difference=1,
+        )
+    )
+    assert decision.enter is True
+    assert decision.reason == "spread_plus_v2_enter"
+
+
 def make_minus_input(**overrides) -> SpreadConfirmationInput:
     payload = {
         "event_id": "1",
@@ -398,3 +422,22 @@ def test_spread_minus_enter_rejects_not_stable() -> None:
     decision = spread_minus_enter_decision_v1(make_minus_input(stable_for_2_snapshots=False, stable_for_3_snapshots=False))
     assert decision.enter is False
     assert decision.reason == "spread_minus_no_enter_not_stable"
+
+
+def test_spread_minus_score_only_v2_requires_extra_goal_buffer() -> None:
+    decision = spread_minus_enter_decision_score_only_v2(make_minus_input())
+    assert decision.enter is False
+    assert decision.reason == "spread_minus_v2_margin_too_small"
+
+
+def test_spread_minus_score_only_v2_accepts_minus_one_point_five_at_three_zero() -> None:
+    decision = spread_minus_enter_decision_score_only_v2(
+        make_minus_input(
+            score="3-0",
+            home_goals=3,
+            away_goals=0,
+            goal_difference=3,
+        )
+    )
+    assert decision.enter is True
+    assert decision.reason == "spread_minus_v2_enter"

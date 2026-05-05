@@ -122,7 +122,7 @@ def test_enter_decision_rejects_chaos_goal_last_3min() -> None:
     data = make_input(goal_in_last_3min=True, stable_for_2_snapshots=True)
     decision = enter_decision_v1(data)
     assert decision.enter is False
-    assert decision.reason == "proof_of_winning_no_enter_chaos_goal_last_3min"
+    assert decision.reason == "proof_of_winning_no_enter_chaos_goal_last_5min"
 
 
 def test_enter_decision_rejects_when_not_stable() -> None:

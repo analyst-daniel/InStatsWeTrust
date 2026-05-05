@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 
@@ -16,12 +19,33 @@ class TrackedMatches:
     def load(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        payload = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+        raw = self.path.read_text(encoding="utf-8", errors="replace")
+        payload = decode_tracked_payload(raw)
         events = payload.get("events", []) if isinstance(payload, dict) else []
         return [event for event in events if isinstance(event, dict)]
 
     def save(self, events: list[dict[str, Any]]) -> None:
-        self.path.write_text(json.dumps({"events": events}, ensure_ascii=False), encoding="utf-8")
+        payload = json.dumps({"events": events}, ensure_ascii=False)
+        last_error: Exception | None = None
+        for _ in range(4):
+            temp_path = None
+            try:
+                with NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(self.path.parent)) as handle:
+                    handle.write(payload)
+                    temp_path = Path(handle.name)
+                temp_path.replace(self.path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.1)
+            finally:
+                if temp_path is not None and temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+        if last_error is not None:
+            raise last_error
 
     def update_from_discovery(self, events: list[dict[str, Any]], *, now: datetime | None = None) -> list[dict[str, Any]]:
         now = now or datetime.now(timezone.utc)
@@ -46,6 +70,76 @@ class TrackedMatches:
         retained.sort(key=lambda event: event_start(event) or datetime.max.replace(tzinfo=timezone.utc))
         self.save(retained)
         return retained
+
+    def resolve_fixture_id(self, *, event_id: str = "", event_slug: str = "", event_title: str = "") -> str:
+        wanted_id = str(event_id or "")
+        wanted_slug = str(event_slug or "")
+        wanted_title = normalize_event_title(event_title)
+        slug_match = ""
+        title_match = ""
+        for event in self.load():
+            if wanted_id and str(event.get("id") or "") == wanted_id:
+                fixture_id = str(event.get("fixture_id") or "")
+                if fixture_id:
+                    return fixture_id
+            if wanted_slug and str(event.get("slug") or "") == wanted_slug:
+                fixture_id = str(event.get("fixture_id") or "")
+                if fixture_id and not slug_match:
+                    slug_match = fixture_id
+            if wanted_title and normalize_event_title(str(event.get("title") or "")) == wanted_title:
+                fixture_id = str(event.get("fixture_id") or "")
+                if fixture_id and not title_match:
+                    title_match = fixture_id
+        return slug_match or title_match or ""
+
+    def attach_fixture_mapping(
+        self,
+        *,
+        event_id: str = "",
+        event_slug: str = "",
+        event_title: str = "",
+        fixture_id: str = "",
+        live_slug: str = "",
+        mapping_confidence: str = "live_state",
+        mapped_at: datetime | None = None,
+    ) -> bool:
+        fixture_id = str(fixture_id or "")
+        if not fixture_id:
+            return False
+        mapped_at = mapped_at or datetime.now(timezone.utc)
+        wanted_id = str(event_id or "")
+        wanted_slug = str(event_slug or "")
+        wanted_title = normalize_event_title(event_title)
+        events = self.load()
+        changed = False
+        matched = False
+        for event in events:
+            if wanted_id and str(event.get("id") or "") == wanted_id:
+                matched = True
+                changed = update_mapping_row(event, fixture_id, live_slug, mapping_confidence, mapped_at) or changed
+                continue
+            if wanted_slug and str(event.get("slug") or "") == wanted_slug:
+                matched = True
+                changed = update_mapping_row(event, fixture_id, live_slug, mapping_confidence, mapped_at) or changed
+                continue
+            if wanted_title and normalize_event_title(str(event.get("title") or "")) == wanted_title:
+                matched = True
+                changed = update_mapping_row(event, fixture_id, live_slug, mapping_confidence, mapped_at) or changed
+        if not matched:
+            new_event = {
+                "id": wanted_id,
+                "slug": wanted_slug,
+                "title": event_title,
+            }
+            update_mapping_row(new_event, fixture_id, live_slug, mapping_confidence, mapped_at)
+            events.append(new_event)
+            changed = True
+        if changed:
+            try:
+                self.save(events)
+            except PermissionError:
+                return False
+        return changed
 
 
 def event_key(event: dict[str, Any]) -> str:
@@ -77,3 +171,49 @@ def merge_tracked_events(events: list[dict[str, Any]], tracked: list[dict[str, A
         if key:
             merged[key] = event
     return list(merged.values())
+
+
+def update_mapping_row(
+    event: dict[str, Any],
+    fixture_id: str,
+    live_slug: str,
+    mapping_confidence: str,
+    mapped_at: datetime,
+) -> bool:
+    before = (
+        str(event.get("fixture_id") or ""),
+        str(event.get("live_slug") or ""),
+        str(event.get("mapping_confidence") or ""),
+    )
+    event["fixture_id"] = fixture_id
+    if live_slug:
+        event["live_slug"] = live_slug
+    event["mapping_confidence"] = mapping_confidence
+    event["mapped_at"] = mapped_at.isoformat()
+    after = (
+        str(event.get("fixture_id") or ""),
+        str(event.get("live_slug") or ""),
+        str(event.get("mapping_confidence") or ""),
+    )
+    return before != after
+
+
+def normalize_event_title(value: str) -> str:
+    cleaned = re.sub(r"\s+-\s+(more markets|exact score|halftime result).*$", "", str(value or ""), flags=re.IGNORECASE)
+    return re.sub(r"[^a-z0-9]+", "", cleaned.lower())
+
+
+def decode_tracked_payload(raw: str) -> dict[str, Any]:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        try:
+            payload, _ = decoder.raw_decode(text)
+            return payload if isinstance(payload, dict) else {}
+        except json.JSONDecodeError:
+            return {}

@@ -4,6 +4,8 @@ from app.strategy.goal_totals_under import (
     UnderTimeBucket,
     build_goal_totals_under_input,
     goal_totals_under_activation_decision,
+    goal_totals_under_enter_decision_score_only_v1,
+    goal_totals_under_enter_decision_score_only_v2,
     goal_totals_under_enter_decision_pre_stability_v1,
     goal_totals_under_enter_decision_v1,
     parse_totals_market,
@@ -285,3 +287,91 @@ def test_goal_totals_under_enter_allows_slightly_looser_case_for_buffer_two_plus
     )
     assert decision.enter is True
     assert decision.reason == "goal_totals_under_enter"
+
+
+def test_goal_totals_under_score_only_v1_accepts_72_with_buffer_two() -> None:
+    decision = goal_totals_under_enter_decision_score_only_v1(
+        make_under_input(
+            minute=72.0,
+            score="1-0",
+            home_goals=1,
+            away_goals=0,
+            total_goals=1,
+            total_line=3.0,
+            goal_buffer=2.0,
+            data_confidence_flag=False,
+        )
+    )
+    assert decision.enter is True
+    assert decision.reason == "goal_totals_under_v1_enter"
+
+
+def test_goal_totals_under_score_only_v1_rejects_72_with_buffer_below_two() -> None:
+    decision = goal_totals_under_enter_decision_score_only_v1(
+        make_under_input(
+            minute=72.0,
+            score="1-0",
+            home_goals=1,
+            away_goals=0,
+            total_goals=1,
+            total_line=2.5,
+            goal_buffer=1.5,
+            data_confidence_flag=False,
+        )
+    )
+    assert decision.enter is False
+    assert decision.reason == "goal_totals_under_v1_buffer_too_small"
+
+
+def test_goal_totals_under_score_only_v1_accepts_78_with_buffer_one() -> None:
+    decision = goal_totals_under_enter_decision_score_only_v1(
+        make_under_input(
+            minute=78.0,
+            score="2-0",
+            home_goals=2,
+            away_goals=0,
+            total_goals=2,
+            total_line=3.0,
+            goal_buffer=1.0,
+            data_confidence_flag=False,
+        )
+    )
+    assert decision.enter is True
+    assert decision.reason == "goal_totals_under_v1_enter"
+
+
+def test_goal_totals_under_score_only_v2_requires_stability() -> None:
+    decision = goal_totals_under_enter_decision_score_only_v2(
+        make_under_input(
+            minute=78.0,
+            score="2-0",
+            home_goals=2,
+            away_goals=0,
+            total_goals=2,
+            total_line=3.0,
+            goal_buffer=1.0,
+            data_confidence_flag=False,
+            stable_for_2_snapshots=False,
+            stable_for_3_snapshots=False,
+        )
+    )
+    assert decision.enter is False
+    assert decision.reason == "goal_totals_under_v2_not_stable"
+
+
+def test_goal_totals_under_score_only_v2_accepts_stable_buffer_one() -> None:
+    decision = goal_totals_under_enter_decision_score_only_v2(
+        make_under_input(
+            minute=78.0,
+            score="2-0",
+            home_goals=2,
+            away_goals=0,
+            total_goals=2,
+            total_line=3.0,
+            goal_buffer=1.0,
+            data_confidence_flag=False,
+            stable_for_2_snapshots=True,
+        )
+    )
+    assert decision.enter is True
+    assert decision.reason == "goal_totals_under_v2_enter"

@@ -12,7 +12,7 @@ def settings() -> dict:
             "sport": "soccer",
             "min_elapsed": 70,
             "max_elapsed": 89,
-            "min_price": 0.95,
+            "min_price": 0.60,
             "max_price": 0.99,
             "require_live_state": True,
             "min_liquidity_usd": 0,
@@ -66,6 +66,26 @@ def test_strategy_snapshot_only_without_live_state() -> None:
     assert decisions[0].reason == "snapshot_only_missing_live_state"
 
 
+def test_strategy_blocks_any_bet_type_below_min_price() -> None:
+    engine = StrategyEngine(settings())
+    low_price_market = market().model_copy(
+        update={
+            "question": "Team A FC vs Team B FC: O/U 2.5",
+            "outcomes": ["Over", "Under"],
+            "yes_token_id": "over",
+            "no_token_id": "under",
+            "best_bid_yes": 0.58,
+            "best_ask_yes": 0.59,
+            "best_bid_no": 0.40,
+            "best_ask_no": 0.41,
+        }
+    )
+    decisions = engine.evaluate_market(low_price_market, live(80.0).model_copy(update={"score": "1-0"}))
+    low_decision = next(d for d in decisions if d.observation.side == "Over")
+    assert not low_decision.eligible_for_trade
+    assert low_decision.reason == "snapshot_only_price_below_min"
+
+
 def test_strategy_blocks_draw_yes_market() -> None:
     engine = StrategyEngine(settings())
     draw_market = market().model_copy(
@@ -94,8 +114,8 @@ def test_strategy_blocks_draw_no_when_margin_below_two() -> None:
             "outcomes": ["Yes", "No"],
             "yes_token_id": "yes",
             "no_token_id": "no",
-            "best_bid_yes": 0.02,
-            "best_ask_yes": 0.03,
+            "best_bid_yes": 0.96,
+            "best_ask_yes": 0.97,
             "best_bid_no": 0.96,
             "best_ask_no": 0.97,
         }
@@ -114,8 +134,8 @@ def test_strategy_allows_draw_no_when_margin_two_plus() -> None:
             "outcomes": ["Yes", "No"],
             "yes_token_id": "yes",
             "no_token_id": "no",
-            "best_bid_yes": 0.02,
-            "best_ask_yes": 0.03,
+            "best_bid_yes": 0.96,
+            "best_ask_yes": 0.97,
             "best_bid_no": 0.96,
             "best_ask_no": 0.97,
         }
@@ -134,8 +154,8 @@ def test_strategy_blocks_btts_market() -> None:
             "outcomes": ["Yes", "No"],
             "yes_token_id": "yes",
             "no_token_id": "no",
-            "best_bid_yes": 0.02,
-            "best_ask_yes": 0.03,
+            "best_bid_yes": 0.96,
+            "best_ask_yes": 0.97,
             "best_bid_no": 0.96,
             "best_ask_no": 0.97,
         }
@@ -174,8 +194,8 @@ def test_strategy_blocks_corners_market() -> None:
             "outcomes": ["Over", "Under"],
             "yes_token_id": "over",
             "no_token_id": "under",
-            "best_bid_yes": 0.02,
-            "best_ask_yes": 0.03,
+            "best_bid_yes": 0.96,
+            "best_ask_yes": 0.97,
             "best_bid_no": 0.96,
             "best_ask_no": 0.97,
         }
@@ -204,6 +224,27 @@ def test_strategy_blocks_anytime_goalscorer_market() -> None:
     assert decisions
     assert not decisions[0].eligible_for_trade
     assert decisions[0].reason == "snapshot_only_no_play_anytime_goalscorer"
+
+
+def test_strategy_blocks_halftime_result_markets_after_main_window() -> None:
+    engine = StrategyEngine(settings())
+    halftime_market = market().model_copy(
+        update={
+            "event_title": "Udinese Calcio vs. Torino FC - Halftime Result",
+            "question": "Torino FC leading at halftime?",
+            "outcomes": ["Yes", "No"],
+            "yes_token_id": "yes",
+            "no_token_id": "no",
+            "best_bid_yes": 0.96,
+            "best_ask_yes": 0.97,
+            "best_bid_no": 0.02,
+            "best_ask_no": 0.03,
+        }
+    )
+    decisions = engine.evaluate_market(halftime_market, live(87.0).model_copy(update={"score": "2-0"}))
+    yes_decision = next(d for d in decisions if d.observation.side == "Yes")
+    assert not yes_decision.eligible_for_trade
+    assert yes_decision.reason == "snapshot_only_no_play_halftime_market"
 
 
 def test_strategy_blocks_comeback_yes_market() -> None:

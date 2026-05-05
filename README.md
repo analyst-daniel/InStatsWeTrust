@@ -15,6 +15,52 @@ pip install -r requirements.txt
 
 If you do not use a venv, run the same scripts with your system Python.
 
+## Quick Start: Windows PowerShell
+
+If the project is already installed and you just want to start everything again, use this exact order:
+
+1. Open PowerShell
+2. Enter the project directory:
+
+```powershell
+cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
+```
+
+3. Restart all runtime windows:
+
+```powershell
+.\restart_all_windows.bat
+```
+
+That command closes old runtime windows and starts the project again in separate external terminals.
+
+If you are in a different folder first, check where you are:
+
+```powershell
+pwd
+```
+
+If needed, list the batch files in the project:
+
+```powershell
+Get-ChildItem *.bat
+```
+
+The most important start commands are:
+
+```powershell
+.\start_all_windows.bat
+.\restart_all_windows.bat
+.\stop_all_windows.bat
+```
+
+Recommended daily usage:
+
+```powershell
+cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
+.\restart_all_windows.bat
+```
+
 ## Run Flow
 
 Terminal 1, live sports state:
@@ -62,14 +108,24 @@ python scripts\run_football_fallback.py
 Batch shortcuts are also available:
 
 ```powershell
+start_all_windows.bat
+restart_all_windows.bat
+stop_all_windows.bat
 start_live_state.bat
 start_football_fallback.bat
 start_scanner.bat
 start_settlement.bat
 start_dashboard.bat
+start_js_dashboard.bat
+start_terminal_dashboard.bat
 scan_once.bat
 settlement_once.bat
 daily_report.bat
+football_once.bat
+live_state_status.bat
+live_matches_status.bat
+prune_live_state_cache.bat
+close_stale_open_trades.bat
 ```
 
 ## Strategy Defaults
@@ -77,9 +133,10 @@ daily_report.bat
 Configured in `config/settings.yaml`:
 
 - sport: soccer
-- elapsed: `75 <= elapsed < 89`
-- price: `0.95 <= ask < 0.99`
-- stake: `$10`
+- elapsed: `70 <= elapsed < 89`
+- price: `0.90 <= ask < 0.99`
+- capital process start balance: `$10`
+- capital process target balance: `$21`
 - max entries per market: `5`
 - no paper entry without live state
 - real execution disabled

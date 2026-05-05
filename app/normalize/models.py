@@ -96,11 +96,16 @@ class PaperTrade(BaseModel):
     side: str
     entry_price: float
     stake_usd: float
+    max_stake_usd_at_entry: Optional[float] = None
     shares: float
     elapsed: Optional[float]
     score: str = ""
     period: str = ""
     entry_reason: str = ""
+    process_id: str = ""
+    process_step: Optional[int] = None
+    process_balance_before: Optional[float] = None
+    process_target_balance: Optional[float] = None
     status: str = "open"
     first_hit_99_at: Optional[datetime] = None
     first_hit_999_at: Optional[datetime] = None

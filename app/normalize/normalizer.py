@@ -9,7 +9,7 @@ from .models import NormalizedMarket
 
 
 def normalize_events(events: list[dict[str, Any]]) -> list[NormalizedMarket]:
-    rows: list[NormalizedMarket] = []
+    rows_by_key: dict[str, tuple[datetime, NormalizedMarket]] = {}
     now = datetime.now(timezone.utc)
     for event in events:
         event_title = str(event.get("title") or event.get("name") or event.get("slug") or "")
@@ -18,8 +18,12 @@ def normalize_events(events: list[dict[str, Any]]) -> list[NormalizedMarket]:
         for market in markets:
             normalized = normalize_market(event, market, sport=sport, timestamp=now)
             if normalized:
-                rows.append(normalized)
-    return rows
+                key = normalized_market_key(normalized)
+                updated_at = latest_market_timestamp(event, market)
+                existing = rows_by_key.get(key)
+                if existing is None or updated_at >= existing[0]:
+                    rows_by_key[key] = (updated_at, normalized)
+    return [row for _, row in rows_by_key.values()]
 
 
 def normalize_standalone_markets(markets: list[dict[str, Any]]) -> list[NormalizedMarket]:
@@ -88,6 +92,33 @@ def normalize_market(event: dict[str, Any], market: dict[str, Any], *, sport: st
         timestamp_utc=timestamp,
         raw=market,
     )
+
+
+def normalized_market_key(market: NormalizedMarket) -> str:
+    return market.market_id or market.market_slug or "|".join([market.event_slug, market.question])
+
+
+def latest_market_timestamp(event: dict[str, Any], market: dict[str, Any]) -> datetime:
+    candidates = [
+        market.get("updatedAt"),
+        market.get("updated_at"),
+        event.get("updatedAt"),
+        event.get("updated_at"),
+    ]
+    for value in candidates:
+        parsed = parse_timestamp(value)
+        if parsed is not None:
+            return parsed
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def classify_sport(event: dict[str, Any]) -> str:

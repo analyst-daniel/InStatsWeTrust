@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.live_state.football_research import FootballResearchStore
 from app.normalize.models import LiveState, MarketObservation, NormalizedMarket
 from app.strategy.goal_totals_under_runtime import GoalTotalsUnderRuntime
+from app.storage.tracked_matches import TrackedMatches
 
 
 def fixture_row(elapsed: int, home_goals: int = 1, away_goals: int = 0) -> dict:
@@ -119,6 +120,13 @@ def make_live_state() -> LiveState:
     )
 
 
+def make_live_state_without_fixture() -> LiveState:
+    state = make_live_state()
+    raw = dict(state.raw)
+    raw["fixture"] = {"status": {"short": "2H", "elapsed": 78}}
+    return state.model_copy(update={"raw": raw})
+
+
 def test_runtime_enters_for_stable_low_pressure_under_market(tmp_path) -> None:
     store = FootballResearchStore(tmp_path / "manifest.json", tmp_path / "raw")
     common_events = [
@@ -164,7 +172,8 @@ def test_runtime_enters_for_stable_low_pressure_under_market(tmp_path) -> None:
     result = runtime.evaluate(make_market(), make_observation("Under"), make_live_state())
     assert result.applies is True
     assert result.enter is True
-    assert result.reason == "goal_totals_under_enter"
+    assert result.reason == "goal_totals_under_v2_enter"
+    assert result.diagnostics["evaluation_path"] == "score_only_v2"
     assert result.payload is not None
     assert result.payload.stable_for_2_snapshots is True
     assert result.payload.minute == 78.0
@@ -185,7 +194,7 @@ def test_runtime_rejects_over_side_with_reason(tmp_path) -> None:
     result = runtime.evaluate(make_market(), make_observation("Over"), make_live_state())
     assert result.applies is True
     assert result.enter is False
-    assert result.reason == "goal_totals_under_wrong_side"
+    assert result.reason == "goal_totals_under_v1_wrong_side"
 
 
 def test_runtime_blocks_when_detail_history_missing(tmp_path) -> None:
@@ -195,6 +204,60 @@ def test_runtime_blocks_when_detail_history_missing(tmp_path) -> None:
     assert result.applies is True
     assert result.enter is False
     assert result.reason == "goal_totals_under_missing_detail_history"
+    assert result.diagnostics["confidence_reason"] == "missing_detail_history"
+
+
+def test_runtime_score_only_v2_enters_when_live_stats_confidence_is_low(tmp_path) -> None:
+    store = FootballResearchStore(tmp_path / "manifest.json", tmp_path / "raw")
+    write_detail(
+        store,
+        elapsed=73,
+        home_stats={"shots": 4},
+        away_stats={"shots": 1},
+        events=[],
+    )
+    write_detail(
+        store,
+        elapsed=78,
+        home_stats={"shots": 5},
+        away_stats={"shots": 1},
+        events=[],
+    )
+    runtime = GoalTotalsUnderRuntime({"goal_totals_under": {"enabled": True, "history_limit": 16}}, store)
+    result = runtime.evaluate(make_market(), make_observation("Under"), make_live_state())
+    assert result.applies is True
+    assert result.enter is True
+    assert result.reason == "goal_totals_under_v2_enter"
+    assert result.diagnostics["evaluation_path"] == "score_only_v2"
+    assert "missing_fields" in result.diagnostics["confidence_reason"]
+
+
+def test_runtime_score_only_v2_blocks_recent_goal_without_live_stats(tmp_path) -> None:
+    store = FootballResearchStore(tmp_path / "manifest.json", tmp_path / "raw")
+    events = [
+        {"time": {"elapsed": 12, "extra": None}, "type": "Goal", "detail": "Normal Goal", "team": {"name": "Cerezo Osaka"}},
+        {"time": {"elapsed": 76, "extra": None}, "type": "Goal", "detail": "Normal Goal", "team": {"name": "Cerezo Osaka"}},
+    ]
+    write_detail(
+        store,
+        elapsed=76,
+        home_stats={},
+        away_stats={},
+        events=events,
+    )
+    write_detail(
+        store,
+        elapsed=78,
+        home_stats={},
+        away_stats={},
+        events=events,
+    )
+    runtime = GoalTotalsUnderRuntime({"goal_totals_under": {"enabled": True, "history_limit": 16}}, store)
+    result = runtime.evaluate(make_market(), make_observation("Under"), make_live_state())
+    assert result.applies is True
+    assert result.enter is False
+    assert result.reason == "goal_totals_under_v1_recent_goal"
+    assert result.diagnostics["evaluation_path"] == "score_only_v2"
 
 
 def test_runtime_skips_non_totals_market(tmp_path) -> None:
@@ -204,3 +267,86 @@ def test_runtime_skips_non_totals_market(tmp_path) -> None:
     result = runtime.evaluate(market, make_observation("Under"), make_live_state())
     assert result.applies is False
     assert result.enter is False
+
+
+def test_runtime_uses_tracked_fixture_mapping_when_live_state_has_no_fixture_id(tmp_path) -> None:
+    store = FootballResearchStore(tmp_path / "manifest.json", tmp_path / "raw")
+    common_events = [
+        {"time": {"elapsed": 12, "extra": None}, "type": "Goal", "detail": "Normal Goal", "team": {"name": "Cerezo Osaka"}}
+    ]
+    write_detail(
+        store,
+        elapsed=68,
+        home_stats={"shots": 3, "shots_on_target": 1, "corners": 0, "dangerous_attacks": 10, "attacks": 18},
+        away_stats={"shots": 1, "shots_on_target": 0, "corners": 0, "dangerous_attacks": 4, "attacks": 10},
+        events=common_events,
+    )
+    write_detail(
+        store,
+        elapsed=73,
+        home_stats={"shots": 4, "shots_on_target": 1, "corners": 0, "dangerous_attacks": 12, "attacks": 20},
+        away_stats={"shots": 1, "shots_on_target": 0, "corners": 0, "dangerous_attacks": 5, "attacks": 12},
+        events=common_events,
+    )
+    write_detail(
+        store,
+        elapsed=78,
+        home_stats={"shots": 5, "shots_on_target": 1, "corners": 0, "dangerous_attacks": 14, "attacks": 24},
+        away_stats={"shots": 1, "shots_on_target": 0, "corners": 0, "dangerous_attacks": 6, "attacks": 14},
+        events=common_events,
+    )
+    tracked = TrackedMatches(tmp_path / "tracked.json")
+    tracked.attach_fixture_mapping(
+        event_id="296790",
+        event_slug="j1100-cer-kyo-2026-04-18-more-markets",
+        event_title="Cerezo Osaka vs Kyoto Sanga FC - More Markets",
+        fixture_id="12345",
+        live_slug="cerezo-osaka-vs-kyoto-sanga-fc",
+    )
+    runtime = GoalTotalsUnderRuntime({"goal_totals_under": {"enabled": True, "history_limit": 16}}, store, tracked)
+    result = runtime.evaluate(make_market(), make_observation("Under"), make_live_state_without_fixture())
+    assert result.applies is True
+    assert result.reason != "goal_totals_under_missing_fixture_id"
+
+
+def test_runtime_uses_research_manifest_when_live_state_has_no_fixture_id_and_no_tracked_mapping(tmp_path) -> None:
+    store = FootballResearchStore(tmp_path / "manifest.json", tmp_path / "raw")
+    common_events = [
+        {"time": {"elapsed": 12, "extra": None}, "type": "Goal", "detail": "Normal Goal", "team": {"name": "Cerezo Osaka"}}
+    ]
+    write_detail(
+        store,
+        elapsed=78,
+        home_stats={"shots": 5, "shots_on_target": 1, "corners": 0, "dangerous_attacks": 14, "attacks": 24},
+        away_stats={"shots": 1, "shots_on_target": 0, "corners": 0, "dangerous_attacks": 6, "attacks": 14},
+        events=common_events,
+    )
+    runtime = GoalTotalsUnderRuntime({"goal_totals_under": {"enabled": True, "history_limit": 16}}, store)
+    result = runtime.evaluate(make_market(), make_observation("Under"), make_live_state_without_fixture())
+    assert result.applies is True
+    assert result.reason != "goal_totals_under_missing_fixture_id"
+
+
+def test_runtime_rejects_under_below_min_entry_price(tmp_path) -> None:
+    store = FootballResearchStore(tmp_path / "manifest.json", tmp_path / "raw")
+    runtime = GoalTotalsUnderRuntime({"goal_totals_under": {"enabled": True, "history_limit": 16, "min_entry_price": 0.60}}, store)
+    observation = make_observation("Under").model_copy(update={"price": 0.59, "ask": 0.59, "bid": 0.58})
+    result = runtime.evaluate(make_market(), observation, make_live_state())
+    assert result.applies is True
+    assert result.enter is False
+    assert result.reason == "goal_totals_under_price_below_min"
+
+
+def test_runtime_rejects_implausible_late_clock_before_market_start(tmp_path) -> None:
+    store = FootballResearchStore(tmp_path / "manifest.json", tmp_path / "raw")
+    runtime = GoalTotalsUnderRuntime(
+        {"goal_totals_under": {"enabled": True, "history_limit": 16, "min_entry_price": 0.60, "max_clock_drift_minutes": 12}},
+        store,
+    )
+    market = make_market().model_copy(update={"start_time": "2026-05-02T14:00:00+00:00"})
+    observation = make_observation("Under").model_copy(update={"timestamp_utc": datetime(2026, 5, 2, 13, 44, 43, tzinfo=timezone.utc)})
+    live_state = make_live_state().model_copy(update={"elapsed": 84.0, "period": "2H", "score": "0-0"})
+    result = runtime.evaluate(market, observation, live_state)
+    assert result.applies is True
+    assert result.enter is False
+    assert result.reason == "goal_totals_under_implausible_market_clock"

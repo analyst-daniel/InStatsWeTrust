@@ -23,8 +23,8 @@ class StrategyEngine:
         self.sport = str(strategy.get("sport", "soccer")).lower()
         self.min_elapsed = float(strategy.get("min_elapsed", 75))
         self.max_elapsed = float(strategy.get("max_elapsed", 89))
-        self.min_price = float(strategy.get("min_price", 0.95))
-        self.max_price = float(strategy.get("max_price", 0.99))
+        self.min_price = float(strategy.get("min_price", 0.60))
+        self.max_price = float(strategy.get("max_price", 1.0))
         self.require_live_state = bool(strategy.get("require_live_state", True))
         self.min_liquidity = float(strategy.get("min_liquidity_usd", strategy.get("min_liquidity", 0)))
         self.max_spread = float(strategy.get("max_spread", 1))
@@ -33,8 +33,6 @@ class StrategyEngine:
         rows: list[CandidateDecision] = []
         for token_id, side, bid, ask in self._sides(market):
             if ask is None:
-                continue
-            if not (self.min_price <= ask < self.max_price):
                 continue
             parsed_spread = parse_spread_market(market.question, side)
             parsed_total = build_goal_totals_under_input(
@@ -85,7 +83,7 @@ class StrategyEngine:
                 total_selected_side_type=parsed_total.selected_side_type.value,
                 total_goals=parsed_total.total_goals,
                 total_goal_buffer=parsed_total.goal_buffer,
-                reason="price_in_target_range",
+                reason="price_observed",
             )
             eligible, reason = self._eligible(market, obs, live_state)
             obs.reason = reason
@@ -109,6 +107,10 @@ class StrategyEngine:
             return False, "snapshot_only_missing_elapsed"
         if not (self.min_elapsed <= live_state.elapsed < self.max_elapsed):
             return False, "snapshot_only_elapsed_outside_window"
+        if obs.price < self.min_price:
+            return False, "snapshot_only_price_below_min"
+        if obs.price > self.max_price:
+            return False, "snapshot_only_price_above_max"
         if obs.spread is not None and obs.spread > self.max_spread:
             return False, "snapshot_only_spread_too_wide"
         if market.liquidity is not None and market.liquidity < self.min_liquidity:
@@ -124,7 +126,10 @@ class StrategyEngine:
         side = str(obs.side or "")
         side_lower = side.lower()
         mtype = market_type(question)
+        event_title_lower = str(market.event_title or "").lower()
 
+        if "halftime" in question_lower or "halftime" in event_title_lower:
+            return "snapshot_only_no_play_halftime_market"
         if "corner" in question_lower:
             return "snapshot_only_no_play_corners"
         if "anytime goalscorer" in question_lower or "goalscorer" in question_lower:

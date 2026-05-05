@@ -47,12 +47,18 @@ class ProofOfWinningInput(BaseModel):
     dangerous_attacks_last_10: Optional[int] = None
     corners_last_5: Optional[int] = None
     corners_last_10: Optional[int] = None
+    xg_last_10: Optional[float] = None
+    shots_inside_box_last_10: Optional[int] = None
+    blocked_shots_last_10: Optional[int] = None
+    yellow_cards_last_10: Optional[int] = None
+    trailing_possession: Optional[float] = None
     total_shots_both_last_10: Optional[int] = None
     total_dangerous_attacks_both_last_10: Optional[int] = None
     total_corners_both_last_10: Optional[int] = None
     goal_in_last_3min: bool = False
     goal_in_last_5min: bool = False
     red_card_in_last_10min: bool = False
+    time_since_last_goal: Optional[float] = None
     pressure_trend_last_10: TrendState = TrendState.UNKNOWN
     shots_trend_last_10: TrendState = TrendState.UNKNOWN
     dangerous_attacks_trend_last_10: TrendState = TrendState.UNKNOWN
@@ -75,7 +81,6 @@ class ProofOfWinningInput(BaseModel):
             "shots_last_5",
             "shots_last_10",
             "shots_on_target_last_10",
-            "dangerous_attacks_last_10",
             "corners_last_10",
         }
         present = set(self.source_fields_present)
@@ -135,6 +140,10 @@ def enter_decision_pre_stability_v1(data: ProofOfWinningInput) -> EnterDecision:
         return EnterDecision(False, "proof_of_winning_no_enter_pressure_corners_last_10")
     if data.dangerous_attacks_last_10 is not None and data.dangerous_attacks_last_10 >= 8:
         return EnterDecision(False, "proof_of_winning_no_enter_pressure_dangerous_attacks_last_10")
+    if data.xg_last_10 is not None and data.xg_last_10 >= 0.35:
+        return EnterDecision(False, "proof_of_winning_no_enter_pressure_xg_last_10")
+    if data.shots_inside_box_last_10 is not None and data.shots_inside_box_last_10 >= 3:
+        return EnterDecision(False, "proof_of_winning_no_enter_pressure_box_shots_last_10")
 
     if data.pressure_trend_last_10 == TrendState.UP:
         return EnterDecision(False, "proof_of_winning_no_enter_trend_pressure_up")
@@ -143,8 +152,8 @@ def enter_decision_pre_stability_v1(data: ProofOfWinningInput) -> EnterDecision:
     if data.dangerous_attacks_trend_last_10 == TrendState.UP:
         return EnterDecision(False, "proof_of_winning_no_enter_trend_dangerous_attacks_up")
 
-    if data.goal_in_last_3min:
-        return EnterDecision(False, "proof_of_winning_no_enter_chaos_goal_last_3min")
+    if data.goal_in_last_3min or data.goal_in_last_5min:
+        return EnterDecision(False, "proof_of_winning_no_enter_chaos_goal_last_5min")
     if data.red_card_in_last_10min:
         return EnterDecision(False, "proof_of_winning_no_enter_chaos_red_card_last_10min")
     if data.tempo_change_last_10 == TrendState.UP:

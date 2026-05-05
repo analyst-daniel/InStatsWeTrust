@@ -2,7 +2,19 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from app.js_dashboard.server import build_diagnostic_funnel, build_proof_debug_rows, summarize_no_play_rejections, summarize_trade_attribution
+from app.js_dashboard.server import (
+    build_diagnostic_funnel,
+    build_proof_debug_rows,
+    summarize_capital_usage,
+    summarize_process_focus,
+    summarize_yesterday_capital_usage,
+    summarize_missing_detail_history_diagnostics,
+    summarize_missing_fixture_diagnostics,
+    summarize_no_play_rejections,
+    summarize_trades,
+    summarize_trade_attribution,
+    update_capital_high_watermark,
+)
 from app.live_state.cache import LiveStateCache
 from app.live_state.football_research import FootballResearchStore
 from app.live_state.matcher import LiveStateMatcher
@@ -394,6 +406,32 @@ def test_summarize_no_play_rejections_groups_reason_counts() -> None:
     assert first["markets"] == 2
 
 
+def test_summarize_trades_separates_resolved_voided_and_stale() -> None:
+    trades = pd.DataFrame(
+        [
+            {"status": "resolved", "stake_usd": 10.0, "pnl_usd": 1.0},
+            {"status": "resolved", "stake_usd": 11.0, "pnl_usd": -2.0},
+            {"status": "resolved", "stake_usd": 12.0, "pnl_usd": 0.0},
+            {"status": "open", "stake_usd": 13.0, "pnl_usd": ""},
+            {"status": "voided_bad_feed", "stake_usd": 14.0, "pnl_usd": 0.0},
+            {"status": "stale_closed", "stake_usd": 15.0, "pnl_usd": ""},
+        ]
+    )
+
+    summary = summarize_trades(trades)
+
+    assert summary["total_trades"] == 4
+    assert summary["open_trades"] == 1
+    assert summary["resolved_trades"] == 3
+    assert summary["wins"] == 1
+    assert summary["losses"] == 1
+    assert summary["pushes"] == 1
+    assert summary["voided_bad_feed"] == 1
+    assert summary["stale_closed"] == 1
+    assert summary["stake_usd"] == 33.0
+    assert summary["pnl_usd"] == -1.0
+
+
 def test_build_diagnostic_funnel_counts_rows() -> None:
     summary, rows = build_diagnostic_funnel(
         events=[{"id": "1"}, {"id": "2"}],
@@ -419,6 +457,98 @@ def test_build_diagnostic_funnel_counts_rows() -> None:
     assert summary["proof_enter"] == 1
     assert summary["under_enter"] == 1
     assert len(rows) >= 10
+
+
+def test_summarize_missing_fixture_diagnostics_groups_by_reason_event_and_question() -> None:
+    proof = pd.DataFrame(
+        [
+            {
+                "rejection_reason": "proof_of_winning_missing_fixture_id",
+                "event_title": "Match A",
+                "league": "League 1",
+                "question": "Will Team A win?",
+            }
+        ]
+    )
+    spread = pd.DataFrame(
+        [
+            {
+                "rejection_reason": "spread_confirmation_missing_fixture_id",
+                "event_title": "Match B",
+                "league": "League 2",
+                "question": "Spread: Team B (-1.5)",
+            },
+            {
+                "rejection_reason": "spread_confirmation_missing_fixture_id",
+                "event_title": "Match B",
+                "league": "League 2",
+                "question": "Spread: Team B (-1.5)",
+            },
+        ]
+    )
+    under = pd.DataFrame(
+        [
+            {
+                "rejection_reason": "goal_totals_under_low_data_confidence",
+                "event_title": "Match C",
+                "league": "League 3",
+                "question": "Team C: O/U 3.5",
+            }
+        ]
+    )
+
+    summary, rows = summarize_missing_fixture_diagnostics(proof, spread, under)
+
+    assert summary == {"rows": 3, "events": 2, "questions": 2, "leagues": 2}
+    assert len(rows) == 2
+    assert rows.iloc[0]["reason"] == "spread_confirmation_missing_fixture_id"
+    assert rows.iloc[0]["rows"] == 2
+
+
+def test_summarize_missing_detail_history_diagnostics_groups_by_reason_event_and_question() -> None:
+    proof = pd.DataFrame(
+        [
+            {
+                "rejection_reason": "proof_of_winning_missing_detail_history",
+                "event_title": "Match A",
+                "league": "League 1",
+                "question": "Will Team A win?",
+            }
+        ]
+    )
+    spread = pd.DataFrame(
+        [
+            {
+                "rejection_reason": "spread_confirmation_missing_detail_history",
+                "event_title": "Match B",
+                "league": "League 2",
+                "question": "Spread: Team B (-1.5)",
+            },
+            {
+                "rejection_reason": "spread_confirmation_missing_detail_history",
+                "event_title": "Match B",
+                "league": "League 2",
+                "question": "Spread: Team B (-1.5)",
+            },
+        ]
+    )
+    under = pd.DataFrame(
+        [
+            {
+                "rejection_reason": "goal_totals_under_low_data_confidence",
+                "event_title": "Match C",
+                "league": "League 3",
+                "question": "Team C: O/U 3.5",
+            }
+        ]
+    )
+
+    summary, rows = summarize_missing_detail_history_diagnostics(proof, spread, under)
+
+    assert summary == {"rows": 3, "events": 2, "questions": 2, "leagues": 2}
+    assert len(rows) == 2
+    assert rows.iloc[0]["reason"] == "spread_confirmation_missing_detail_history"
+    assert rows.iloc[0]["rows"] == 2
 
 
 def test_summarize_trade_attribution_groups_resolved_trades() -> None:
@@ -460,3 +590,138 @@ def test_summarize_trade_attribution_groups_resolved_trades() -> None:
     assert "75-79" in set(by_entry_bucket["group"])
     assert "0.97-0.979" in set(by_price_bucket["group"])
     assert "2+" in set(by_goal_buffer["group"])
+
+
+def test_summarize_trade_attribution_empty_returns_all_tables() -> None:
+    result = summarize_trade_attribution(pd.DataFrame())
+
+    assert len(result) == 7
+    summary, *tables = result
+    assert summary == {"total": 0, "resolved": 0, "wins": 0, "losses": 0, "pnl_usd": 0.0, "win_rate": ""}
+    assert all(table.empty for table in tables)
+
+
+def test_summarize_process_focus_returns_only_active_processes_above_start() -> None:
+    processes = pd.DataFrame(
+        [
+            {"process_id": "p1", "status": "ready", "current_balance": 10.0, "step_count": 1, "open_trade_id": "", "last_result": ""},
+            {"process_id": "p2", "status": "ready", "current_balance": 12.3, "step_count": 2, "open_trade_id": "", "last_result": "resolved"},
+            {"process_id": "p3", "status": "in_trade", "current_balance": 11.1, "step_count": 3, "open_trade_id": "t3", "last_result": "resolved"},
+            {"process_id": "p4", "status": "completed", "current_balance": 21.0, "step_count": 4, "open_trade_id": "", "last_result": "resolved"},
+        ]
+    )
+    summary, rows = summarize_process_focus(processes, start_balance=10.0)
+    assert summary["active_processes"] == 3
+    assert summary["active_above_start"] == 2
+    assert summary["ready_processes"] == 2
+    assert summary["in_trade_processes"] == 1
+    assert summary["balance_above_start"] == 23.4
+    assert [row["process_id"] for row in rows] == ["p2", "p3"]
+
+
+def test_summarize_capital_usage_counts_runs_continuations_and_peak() -> None:
+    processes = pd.DataFrame(
+        [
+            {
+                "process_id": "p1",
+                "created_at": "2026-05-03T10:00:00+00:00",
+                "closed_at": "2026-05-03T12:00:00+00:00",
+                "step_count": 3,
+            },
+            {
+                "process_id": "p2",
+                "created_at": "2026-05-03T11:00:00+00:00",
+                "closed_at": "2026-05-03T13:00:00+00:00",
+                "step_count": 2,
+            },
+            {
+                "process_id": "p3",
+                "created_at": "2026-05-03T14:00:00+00:00",
+                "closed_at": "",
+                "step_count": 1,
+            },
+        ]
+    )
+
+    summary = summarize_capital_usage(processes, start_balance=10.0)
+
+    assert summary["capital_runs"] == 3
+    assert summary["continuations"] == 3
+    assert summary["max_parallel_runs"] == 2
+    assert summary["min_start_capital"] == 20.0
+
+
+def test_summarize_yesterday_capital_usage_counts_locked_trade_stake() -> None:
+    now_berlin = datetime.now(timezone.utc).astimezone(__import__("zoneinfo").ZoneInfo("Europe/Berlin"))
+    yday = now_berlin.date() - pd.Timedelta(days=1)
+    rows = pd.DataFrame(
+        [
+            {
+                "trade_id": "t1",
+                "process_id": "p1",
+                "entry_timestamp": datetime(yday.year, yday.month, yday.day, 10, 0, tzinfo=timezone.utc).isoformat(),
+                "resolved_at": datetime(yday.year, yday.month, yday.day, 12, 0, tzinfo=timezone.utc).isoformat(),
+                "stake_usd": 10.0,
+            },
+            {
+                "trade_id": "t2",
+                "process_id": "p1",
+                "entry_timestamp": datetime(yday.year, yday.month, yday.day, 11, 0, tzinfo=timezone.utc).isoformat(),
+                "resolved_at": datetime(yday.year, yday.month, yday.day, 13, 0, tzinfo=timezone.utc).isoformat(),
+                "stake_usd": 12.5,
+            },
+            {
+                "trade_id": "t3",
+                "process_id": "p2",
+                "entry_timestamp": datetime(yday.year, yday.month, yday.day, 11, 30, tzinfo=timezone.utc).isoformat(),
+                "resolved_at": datetime(yday.year, yday.month, yday.day, 11, 45, tzinfo=timezone.utc).isoformat(),
+                "stake_usd": 20.0,
+            },
+        ]
+    )
+
+    summary = summarize_yesterday_capital_usage(rows, start_balance=10.0)
+
+    assert summary["yday_trades"] == 3
+    assert summary["yday_capital_runs"] == 2
+    assert summary["yday_peak_open_trades"] == 3
+    assert summary["yday_peak_stake_locked"] == 42.5
+    assert summary["yday_min_capital"] == 42.5
+
+
+def test_update_capital_high_watermark_only_writes_when_record_is_beaten(tmp_path) -> None:
+    path = tmp_path / "capital_high_watermark.json"
+
+    first = update_capital_high_watermark(
+        path,
+        {
+            "yday_date": "2026-05-03",
+            "yday_min_capital": 100.0,
+            "yday_peak_open_trades": 10,
+            "yday_peak_stake_locked": 100.0,
+        },
+    )
+    second = update_capital_high_watermark(
+        path,
+        {
+            "yday_date": "2026-05-04",
+            "yday_min_capital": 90.0,
+            "yday_peak_open_trades": 9,
+            "yday_peak_stake_locked": 90.0,
+        },
+    )
+    third = update_capital_high_watermark(
+        path,
+        {
+            "yday_date": "2026-05-05",
+            "yday_min_capital": 120.0,
+            "yday_peak_open_trades": 12,
+            "yday_peak_stake_locked": 120.0,
+        },
+    )
+
+    assert first["capital_record"] == 100.0
+    assert second["capital_record"] == 100.0
+    assert second["capital_record_date"] == "2026-05-03"
+    assert third["capital_record"] == 120.0
+    assert third["capital_record_date"] == "2026-05-05"

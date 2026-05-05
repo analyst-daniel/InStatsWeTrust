@@ -97,6 +97,18 @@ def build_goal_totals_under_debug_rows(
                 "red_card_in_last_10min": bool(payload.red_card_in_last_10min) if payload else False,
                 "stable_for_2_snapshots": bool(payload.stable_for_2_snapshots) if payload else False,
                 "stable_for_3_snapshots": bool(payload.stable_for_3_snapshots) if payload else False,
+                "detail_history_count": evaluation.diagnostics.get("detail_history_count", ""),
+                "has_statistics": evaluation.diagnostics.get("has_statistics", False),
+                "has_events": evaluation.diagnostics.get("has_events", False),
+                "source_fields_present_count": evaluation.diagnostics.get("source_fields_present_count", ""),
+                "source_fields_present": evaluation.diagnostics.get("source_fields_present", ""),
+                "data_confidence_flag": evaluation.diagnostics.get("data_confidence_flag", False),
+                "last_5_ready": evaluation.diagnostics.get("last_5_ready", False),
+                "last_10_ready": evaluation.diagnostics.get("last_10_ready", False),
+                "stable_snapshot_count": evaluation.diagnostics.get("stable_snapshot_count", ""),
+                "confidence_reason": evaluation.diagnostics.get("confidence_reason", ""),
+                "evaluation_path": evaluation.diagnostics.get("evaluation_path", ""),
+                "score_only_reason": evaluation.diagnostics.get("score_only_reason", ""),
             }
         )
     if not rows:

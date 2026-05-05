@@ -16,6 +16,26 @@ class ClobClient:
     def get_book(self, token_id: str) -> dict[str, Any]:
         return self._get("/book", {"token_id": token_id})
 
+    def max_stake_at_price(self, token_id: str, price: float, *, tolerance: float = 1e-9) -> float | None:
+        try:
+            book = self.get_book(token_id)
+        except Exception:
+            return None
+        asks = book.get("asks", []) if isinstance(book, dict) else []
+        total_shares = 0.0
+        for level in asks:
+            if not isinstance(level, dict):
+                continue
+            level_price = to_float(level.get("price"))
+            level_size = to_float(level.get("size"))
+            if level_price is None or level_size is None:
+                continue
+            if abs(level_price - price) <= tolerance:
+                total_shares += level_size
+        if total_shares <= 0:
+            return None
+        return round(total_shares * price, 4)
+
     def get_price(self, token_id: str, side: str = "BUY") -> dict[str, Any]:
         return self._get("/price", {"token_id": token_id, "side": side})
 
@@ -48,3 +68,11 @@ class ClobClient:
                     time.sleep(self.backoff * attempt)
         raise RuntimeError(f"CLOB request failed {path}: {last_exc}")
 
+
+def to_float(value: Any) -> float | None:
+    try:
+        if value in ("", None):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None

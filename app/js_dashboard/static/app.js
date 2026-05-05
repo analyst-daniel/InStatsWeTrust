@@ -3,19 +3,29 @@ let latestData = {};
 
 const sections = {
   diagnostic_funnel_rows: ["stage", "count", "description"],
+  under_buffer_exit_rows: [
+    "timestamp_utc", "event_title", "question", "score", "elapsed", "entry_price", "exit_bid",
+    "hold_pnl_usd", "exit_pnl_usd", "delta_pnl_usd"
+  ],
   pnl_attribution_strategy: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   pnl_attribution_subtype: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   pnl_attribution_league: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   pnl_attribution_entry_bucket: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   pnl_attribution_price_bucket: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   pnl_attribution_goal_buffer: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
+  capital_process_rows: ["process_id", "status", "current_balance", "target_balance", "step_count", "wins", "losses", "open_trade_id", "last_result"],
+  process_focus_rows: ["process_id", "status", "current_balance", "next_stake", "profit_over_start", "step_count", "open_trade_id", "last_result"],
   open_trades: [
-    "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd",
+    "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd", "max_stake_usd_at_entry",
+    "entry_minute", "entry_score", "period", "entry_reason", "first_hit_99_at", "first_hit_999_at", "max_favorable_price", "status"
+  ],
+  stale_open_trades: [
+    "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd", "max_stake_usd_at_entry",
     "entry_minute", "entry_score", "period", "entry_reason", "first_hit_99_at", "first_hit_999_at", "max_favorable_price", "status"
   ],
   resolved_trades: [
     "win", "loss", "resolved_at", "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price",
-    "stake_usd", "entry_minute", "entry_score", "period", "entry_reason", "result", "pnl_usd", "status"
+    "stake_usd", "max_stake_usd_at_entry", "entry_minute", "entry_score", "period", "entry_reason", "result", "pnl_usd", "status"
   ],
   live75: [
     "event_title", "league", "score", "period", "confirmed_match_minute", "match_minute", "live_update_age_sec", "market_count",
@@ -45,11 +55,15 @@ const sections = {
   no_play_rejections: [
     "timestamp_utc", "event_title", "league", "question", "bet_label", "side", "price", "score", "period", "match_minute", "reason"
   ],
+  missing_fixture_rows: ["reason", "event_title", "league", "question", "rows"],
+  missing_detail_history_rows: ["reason", "event_title", "league", "question", "rows"],
   proof_debug: [
     "timestamp_utc", "event_title", "question", "side", "final_decision", "rejection_reason", "minute", "score",
     "goal_difference", "effective_goal_difference", "shots_last_10", "shots_on_target_last_10", "corners_last_10",
     "dangerous_attacks_last_10", "pressure_trend_last_10", "tempo_change_last_10", "goal_in_last_3min",
-    "red_card_in_last_10min", "stable_for_2_snapshots", "stable_for_3_snapshots"
+    "red_card_in_last_10min", "stable_for_2_snapshots", "stable_for_3_snapshots",
+    "detail_history_count", "has_statistics", "has_events", "source_fields_present_count", "source_fields_present",
+    "data_confidence_flag", "last_5_ready", "last_10_ready", "stable_snapshot_count", "confidence_reason"
   ],
   spread_debug: [
     "timestamp_utc", "event_title", "question", "side", "final_decision", "rejection_reason", "minute", "score",
@@ -58,7 +72,10 @@ const sections = {
     "underdog_shots_last_10", "underdog_shots_on_target_last_10", "underdog_dangerous_attacks_last_10", "underdog_corners_last_10",
     "leader_pressure_trend_last_10", "underdog_pressure_trend_last_10", "shots_trend_last_10", "dangerous_attacks_trend_last_10",
     "tempo_change_last_10", "goal_in_last_3min", "goal_in_last_5min", "red_card_in_last_10min",
-    "stable_for_2_snapshots", "stable_for_3_snapshots"
+    "stable_for_2_snapshots", "stable_for_3_snapshots",
+    "detail_history_count", "has_statistics", "has_events", "source_fields_present_count", "source_fields_present",
+    "data_confidence_flag", "last_5_ready", "last_10_ready", "stable_snapshot_count", "confidence_reason",
+    "evaluation_path", "score_only_reason"
   ],
   goal_totals_under_debug: [
     "timestamp_utc", "event_title", "question", "side", "final_decision", "rejection_reason", "minute", "score",
@@ -66,7 +83,9 @@ const sections = {
     "dangerous_attacks_last_10", "corners_last_10", "total_shots_both_last_10", "total_dangerous_attacks_both_last_10",
     "total_corners_both_last_10", "pressure_trend_last_10", "shots_trend_last_10", "dangerous_attacks_trend_last_10",
     "tempo_change_last_10", "goal_in_last_3min", "goal_in_last_5min", "red_card_in_last_10min",
-    "stable_for_2_snapshots", "stable_for_3_snapshots"
+    "stable_for_2_snapshots", "stable_for_3_snapshots",
+    "detail_history_count", "has_statistics", "has_events", "source_fields_present_count", "source_fields_present",
+    "data_confidence_flag", "last_5_ready", "last_10_ready", "stable_snapshot_count", "confidence_reason"
   ],
   goal_totals_under_calibration_line: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   goal_totals_under_calibration_entry_bucket: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
@@ -157,7 +176,7 @@ function renderStatus(health) {
   const keys = [
     "events", "soccer_matches", "live", "live75",
     "unconfirmed_started", "unmatched", "fresh_candidates", "raw_snapshots", "open_trades", "resolved", "no_play_rejections",
-    "pnl_usd", "win_rate"
+    "pnl_usd", "pnl_v2_usd", "win_rate", "yday_peak_open_trades", "yday_peak_stake_locked", "yday_min_capital", "capital_record", "capital_record_date"
   ];
   document.getElementById("status").innerHTML = keys.map((key) => (
     `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(health[key] ?? 0))}</strong></div>`
@@ -168,11 +187,21 @@ function renderSummary(summary) {
   const target = document.getElementById("trade_summary");
   const keys = [
     "total_trades", "open_trades", "resolved_trades", "wins", "losses", "pushes",
-    "stale_closed", "stake_usd", "pnl_usd", "win_rate"
+    "stale_closed", "voided_bad_feed", "stake_usd", "pnl_usd", "win_rate",
+    "capital_runs", "continuations", "max_parallel_runs", "min_start_capital",
+    "yday_trades", "yday_capital_runs", "yday_peak_open_trades", "yday_peak_stake_locked", "yday_min_capital",
+    "capital_record", "capital_record_date", "capital_record_peak_open_trades", "capital_record_peak_stake_locked"
   ];
   target.innerHTML = keys.map((key) => (
-    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(summaryValue(summary, key))}</strong></div>`
   )).join("");
+}
+
+function summaryValue(summary, key) {
+  if (key === "pnl_usd" && summary.pnl_v2_usd !== undefined && summary.pnl_v2_usd !== "") {
+    return `${summary.pnl_usd ?? ""} (v2: ${summary.pnl_v2_usd})`;
+  }
+  return String(summary[key] ?? "");
 }
 
 function renderDiagnosticFunnel(summary) {
@@ -190,6 +219,46 @@ function renderDiagnosticFunnel(summary) {
 function renderPnlAttribution(summary) {
   const target = document.getElementById("pnl_attribution");
   const keys = ["total", "resolved", "wins", "losses", "pnl_usd", "win_rate"];
+  target.innerHTML = keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  )).join("");
+}
+
+function renderUnderBufferExit(summary) {
+  const target = document.getElementById("under_buffer_exit_summary");
+  const keys = ["triggered", "resolved_compared", "hold_pnl_usd", "exit_rule_pnl_usd", "delta_pnl_usd"];
+  target.innerHTML = keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  )).join("");
+}
+
+function renderCapitalProcesses(summary) {
+  const target = document.getElementById("capital_process_summary");
+  const keys = ["enabled", "total", "ready", "in_trade", "completed", "busted", "current_balance", "deployed_capital"];
+  target.innerHTML = keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  )).join("");
+}
+
+function renderProcessFocus(summary) {
+  const target = document.getElementById("process_focus_summary");
+  const keys = ["active_processes", "active_above_start", "ready_processes", "in_trade_processes", "balance_above_start"];
+  target.innerHTML = keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  )).join("");
+}
+
+function renderMissingFixtureSummary(summary) {
+  const target = document.getElementById("missing_fixture_summary");
+  const keys = ["rows", "events", "questions", "leagues"];
+  target.innerHTML = keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  )).join("");
+}
+
+function renderMissingDetailHistorySummary(summary) {
+  const target = document.getElementById("missing_detail_history_summary");
+  const keys = ["rows", "events", "questions", "leagues"];
   target.innerHTML = keys.map((key) => (
     `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
   )).join("");
@@ -245,8 +314,13 @@ function render(data) {
       `updated=${data.updated_at} latest_snapshot=${data.health.latest_snapshot || "none"} refresh=10s`;
     renderStatus(data.health);
     renderSummary(data.trade_summary || {});
+    renderUnderBufferExit(data.under_buffer_exit_summary || {});
+    renderProcessFocus(data.process_focus_summary || {});
+    renderCapitalProcesses(data.capital_process_summary || {});
     renderDiagnosticFunnel(data.diagnostic_funnel_summary || {});
     renderPnlAttribution(data.pnl_attribution_summary || {});
+    renderMissingFixtureSummary(data.missing_fixture_summary || {});
+    renderMissingDetailHistorySummary(data.missing_detail_history_summary || {});
     renderProofCalibration(data.proof_of_winning_calibration_summary || {});
     renderSpreadCalibration(data.spread_confirmation_calibration_summary || {});
     renderGoalTotalsUnderCalibration(data.goal_totals_under_calibration_summary || {});

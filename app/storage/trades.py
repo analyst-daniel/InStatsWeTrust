@@ -19,11 +19,13 @@ def load_trades(path: Path) -> list[PaperTrade]:
 
 def coerce_trade_row(row: dict[str, str]) -> dict[str, object]:
     out: dict[str, object] = dict(row)
-    for key in ["entry_price", "stake_usd", "shares", "elapsed", "max_favorable_price", "pnl_usd"]:
+    for key in ["entry_price", "stake_usd", "max_stake_usd_at_entry", "shares", "elapsed", "max_favorable_price", "pnl_usd", "process_balance_before", "process_target_balance"]:
         out[key] = float(row[key]) if row.get(key) not in ("", None) else None
+    out["process_step"] = int(row["process_step"]) if row.get("process_step") not in ("", None) else None
     if out["max_favorable_price"] is None:
         out["max_favorable_price"] = 0.0
     for key in ["entry_timestamp", "first_hit_99_at", "first_hit_999_at", "resolved_at"]:
         out[key] = datetime.fromisoformat(row[key].replace("Z", "+00:00")) if row.get(key) else None
     out["entry_reason"] = row.get("entry_reason", "") or ""
+    out["process_id"] = row.get("process_id", "") or ""
     return out

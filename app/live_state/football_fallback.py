@@ -10,6 +10,7 @@ from app.live_state.cache import LiveStateCache, slugify
 from app.live_state.football_api_client import FootballApiClient
 from app.live_state.football_research import FootballResearchStore, capture_proof_of_winning_details
 from app.normalize.models import LiveState
+from app.storage.tracked_matches import TrackedMatches
 from app.utils.config import resolve_path
 
 
@@ -18,6 +19,7 @@ def update_live_state_from_football_api(settings: dict[str, Any], cache: LiveSta
     fixtures = client.fixtures_live()
     raw_dir = resolve_path(settings["storage"]["raw_dir"])
     manifest_path = resolve_path(settings["storage"]["football_research_manifest_json"])
+    tracked_matches = TrackedMatches(resolve_path(settings["storage"]["tracked_matches_json"]))
     research_store = FootballResearchStore(raw_dir=raw_dir, manifest_path=manifest_path)
     research_store.append_fixtures_live_snapshot(fixtures)
     updated = 0
@@ -38,7 +40,7 @@ def update_live_state_from_football_api(settings: dict[str, Any], cache: LiveSta
         if (now - state.last_update).total_seconds() <= max_age
     }
     cache.save()
-    captured = capture_proof_of_winning_details(settings, client, research_store, fixtures)
+    captured = capture_proof_of_winning_details(settings, client, research_store, fixtures, tracked_matches=tracked_matches)
     return updated, with_elapsed, captured
 
 

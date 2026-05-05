@@ -17,6 +17,11 @@ class TeamWindowStats(BaseModel):
     dangerous_attacks_last_10: Optional[int] = None
     corners_last_5: Optional[int] = None
     corners_last_10: Optional[int] = None
+    xg_last_10: Optional[float] = None
+    shots_inside_box_last_10: Optional[int] = None
+    blocked_shots_last_10: Optional[int] = None
+    yellow_cards_last_10: Optional[int] = None
+    possession: Optional[float] = None
 
 
 class MatchWindowStats(BaseModel):
@@ -139,17 +144,27 @@ def build_rolling_metrics(detail_history: list[dict[str, Any]]) -> RollingMetric
         dangerous_attacks_last_10=to_int_or_none(trailing_10.get("dangerous_attacks")),
         corners_last_5=to_int_or_none(trailing_5.get("corners")),
         corners_last_10=to_int_or_none(trailing_10.get("corners")),
+        xg_last_10=to_float_or_none(trailing_10.get("xg")),
+        shots_inside_box_last_10=to_int_or_none(trailing_10.get("shots_inside_box")),
+        blocked_shots_last_10=to_int_or_none(trailing_10.get("blocked_shots")),
+        yellow_cards_last_10=to_int_or_none(trailing_10.get("yellow_cards")),
+        possession=to_float_or_none(trailing_now.get("possession")),
     )
     for field in (
         "shots_last_5",
         "shots_last_10",
         "shots_on_target_last_10",
-        "dangerous_attacks_last_10",
         "corners_last_10",
+        "xg_last_10",
+        "shots_inside_box_last_10",
+        "blocked_shots_last_10",
+        "yellow_cards_last_10",
+        "possession",
     ):
         if getattr(trailing_stats, field) is not None:
             fields_present.append(field)
 
+    required_fields = {"shots_last_5", "shots_last_10", "shots_on_target_last_10", "corners_last_10"}
     return RollingMetrics(
         trailing=trailing_stats,
         match=MatchWindowStats(
@@ -163,7 +178,7 @@ def build_rolling_metrics(detail_history: list[dict[str, Any]]) -> RollingMetric
         ),
         trend=trend,
         source_fields_present=fields_present,
-        data_confidence_flag=len(fields_present) >= 5,
+        data_confidence_flag=required_fields.issubset(set(fields_present)),
     )
 
 
@@ -178,12 +193,18 @@ def populate_input_with_metrics(base: ProofOfWinningInput, metrics: RollingMetri
             "dangerous_attacks_last_10": metrics.trailing.dangerous_attacks_last_10,
             "corners_last_5": metrics.trailing.corners_last_5,
             "corners_last_10": metrics.trailing.corners_last_10,
+            "xg_last_10": metrics.trailing.xg_last_10,
+            "shots_inside_box_last_10": metrics.trailing.shots_inside_box_last_10,
+            "blocked_shots_last_10": metrics.trailing.blocked_shots_last_10,
+            "yellow_cards_last_10": metrics.trailing.yellow_cards_last_10,
+            "trailing_possession": metrics.trailing.possession,
             "total_shots_both_last_10": metrics.match.total_shots_both_last_10,
             "total_dangerous_attacks_both_last_10": metrics.match.total_dangerous_attacks_both_last_10,
             "total_corners_both_last_10": metrics.match.total_corners_both_last_10,
             "goal_in_last_3min": metrics.match.goal_in_last_3min,
             "goal_in_last_5min": metrics.match.goal_in_last_5min,
             "red_card_in_last_10min": metrics.match.red_card_in_last_10min,
+            "time_since_last_goal": metrics.match.time_since_last_goal,
             "pressure_trend_last_10": metrics.trend.pressure_trend_last_10,
             "shots_trend_last_10": metrics.trend.shots_trend_last_10,
             "dangerous_attacks_trend_last_10": metrics.trend.dangerous_attacks_trend_last_10,
@@ -231,7 +252,7 @@ def trailing_team_name(teams: tuple[str, str], score: tuple[int, int]) -> str:
     return ""
 
 
-def statistics_map(detail: Optional[dict[str, Any]]) -> dict[str, dict[str, int]]:
+def statistics_map(detail: Optional[dict[str, Any]]) -> dict[str, dict[str, float]]:
     if not detail:
         return {}
     rows = detail.get("statistics")
@@ -244,14 +265,14 @@ def statistics_map(detail: Optional[dict[str, Any]]) -> dict[str, dict[str, int]
         team = row.get("team") if isinstance(row.get("team"), dict) else {}
         team_name = str(team.get("name") or "")
         stats = row.get("statistics") if isinstance(row.get("statistics"), list) else []
-        metric_map: dict[str, int] = {}
+        metric_map: dict[str, float] = {}
         for item in stats:
             if not isinstance(item, dict):
                 continue
             stat_type = normalize_stat_type(str(item.get("type") or ""))
             if not stat_type:
                 continue
-            value = parse_int(item.get("value"))
+            value = parse_number(item.get("value"))
             if value is None:
                 continue
             metric_map[stat_type] = value
@@ -269,14 +290,21 @@ def normalize_stat_type(value: str) -> str:
         "corner kicks": "corners",
         "dangerous attacks": "dangerous_attacks",
         "attacks": "attacks",
+        "expected_goals": "xg",
+        "expected goals": "xg",
+        "shots insidebox": "shots_inside_box",
+        "shots inside box": "shots_inside_box",
+        "blocked shots": "blocked_shots",
+        "yellow cards": "yellow_cards",
+        "ball possession": "possession",
         "red cards": "red_cards",
     }
     return mapping.get(key, "")
 
 
-def diff_team_stats(current: dict[str, int], baseline: dict[str, int]) -> dict[str, int]:
-    keys = {"shots", "shots_on_target", "dangerous_attacks", "corners"}
-    out: dict[str, int] = {}
+def diff_team_stats(current: dict[str, int], baseline: dict[str, int]) -> dict[str, int | float]:
+    keys = {"shots", "shots_on_target", "dangerous_attacks", "corners", "xg", "shots_inside_box", "blocked_shots", "yellow_cards"}
+    out: dict[str, int | float] = {}
     for key in keys:
         if key not in current:
             continue
@@ -284,7 +312,7 @@ def diff_team_stats(current: dict[str, int], baseline: dict[str, int]) -> dict[s
     return out
 
 
-def diff_match_totals(current: dict[str, dict[str, int]], baseline: dict[str, dict[str, int]]) -> dict[str, int]:
+def diff_match_totals(current: dict[str, dict[str, float]], baseline: dict[str, dict[str, float]]) -> dict[str, float]:
     return {
         "shots": max(sum(team.get("shots", 0) for team in current.values()) - sum(team.get("shots", 0) for team in baseline.values()), 0),
         "dangerous_attacks": max(
@@ -387,13 +415,29 @@ def tempo_value(stats: dict[str, Any]) -> Optional[int]:
     return shots + dangerous + corners
 
 
-def parse_int(value: Any) -> Optional[int]:
+def parse_number(value: Any) -> Optional[float]:
     try:
         if value in ("", None):
             return None
         if isinstance(value, str) and "%" in value:
             value = value.replace("%", "")
-        return int(float(value))
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_int(value: Any) -> Optional[int]:
+    parsed = parse_number(value)
+    return int(parsed) if parsed is not None else None
+
+
+def to_float_or_none(value: Any) -> Optional[float]:
+    try:
+        if value in ("", None):
+            return None
+        if isinstance(value, str) and "%" in value:
+            value = value.replace("%", "")
+        return float(value)
     except (TypeError, ValueError):
         return None
 

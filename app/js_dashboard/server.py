@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -26,7 +27,10 @@ from app.strategy.proof_of_winning_runtime import ProofOfWinningRuntime
 from app.strategy.spread_confirmation_calibration import summarize_spread_confirmation_trades
 from app.strategy.spread_confirmation_reporting import build_spread_debug_rows
 from app.strategy.spread_confirmation_runtime import SpreadConfirmationRuntime
+from app.storage.trades import load_trades
+from app.storage.tracked_matches import TrackedMatches
 from app.utils.config import load_settings, resolve_path
+from app.capital.processes import CapitalProcessManager
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +57,15 @@ def read_table(name: str) -> pd.DataFrame:
             return pd.read_sql_query(f"SELECT * FROM {name}", conn)
         except Exception:
             return pd.DataFrame()
+
+
+def read_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
 
 
 def compact_rows(df: pd.DataFrame, columns: list[str], limit: int = 50) -> list[dict]:
@@ -85,6 +98,62 @@ def summarize_no_play_rejections(df: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"reason": "group"})
     )
     return grouped.sort_values(["rows", "events"], ascending=[False, False]).reset_index(drop=True)
+
+
+def summarize_missing_fixture_diagnostics(*frames: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
+    combined = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True) if any(not frame.empty for frame in frames) else pd.DataFrame()
+    if combined.empty:
+        return {"rows": 0, "events": 0, "questions": 0, "leagues": 0}, pd.DataFrame()
+    for column in ["rejection_reason", "event_title", "league", "question"]:
+        if column not in combined.columns:
+            combined[column] = ""
+    reason_series = combined.get("rejection_reason", pd.Series(dtype=object)).astype(str)
+    filtered = combined[reason_series.str.endswith("missing_fixture_id", na=False)].copy()
+    if filtered.empty:
+        return {"rows": 0, "events": 0, "questions": 0, "leagues": 0}, pd.DataFrame()
+    summary = {
+        "rows": int(len(filtered)),
+        "events": int(filtered.get("event_title", pd.Series(dtype=object)).nunique()),
+        "questions": int(filtered.get("question", pd.Series(dtype=object)).nunique()),
+        "leagues": int(filtered.get("league", pd.Series(dtype=object)).replace("", pd.NA).dropna().nunique()),
+    }
+    rows = (
+        filtered.groupby(["rejection_reason", "event_title", "league", "question"], dropna=False)
+        .agg(rows=("question", "count"))
+        .reset_index()
+        .rename(columns={"rejection_reason": "reason"})
+        .sort_values(["rows", "event_title", "question"], ascending=[False, True, True])
+        .reset_index(drop=True)
+    )
+    return summary, rows
+
+
+def summarize_missing_detail_history_diagnostics(*frames: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
+    combined = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True) if any(not frame.empty for frame in frames) else pd.DataFrame()
+    if combined.empty:
+        return {"rows": 0, "events": 0, "questions": 0, "leagues": 0}, pd.DataFrame()
+    for column in ["rejection_reason", "event_title", "league", "question"]:
+        if column not in combined.columns:
+            combined[column] = ""
+    reason_series = combined.get("rejection_reason", pd.Series(dtype=object)).astype(str)
+    filtered = combined[reason_series.str.endswith("missing_detail_history", na=False)].copy()
+    if filtered.empty:
+        return {"rows": 0, "events": 0, "questions": 0, "leagues": 0}, pd.DataFrame()
+    summary = {
+        "rows": int(len(filtered)),
+        "events": int(filtered.get("event_title", pd.Series(dtype=object)).nunique()),
+        "questions": int(filtered.get("question", pd.Series(dtype=object)).nunique()),
+        "leagues": int(filtered.get("league", pd.Series(dtype=object)).replace("", pd.NA).dropna().nunique()),
+    }
+    rows = (
+        filtered.groupby(["rejection_reason", "event_title", "league", "question"], dropna=False)
+        .agg(rows=("question", "count"))
+        .reset_index()
+        .rename(columns={"rejection_reason": "reason"})
+        .sort_values(["rows", "event_title", "question"], ascending=[False, True, True])
+        .reset_index(drop=True)
+    )
+    return summary, rows
 
 
 def infer_strategy_family(entry_reason: object, question: object) -> str:
@@ -202,6 +271,8 @@ def summarize_trade_attribution(
             empty,
             empty,
             empty,
+            empty,
+            empty,
         )
     frame = trades.copy()
     frame["resolved_flag"] = frame.get("status", "").astype(str).eq("resolved")
@@ -210,6 +281,8 @@ def summarize_trade_attribution(
         empty = pd.DataFrame()
         return (
             {"total": int(len(frame)), "resolved": 0, "wins": 0, "losses": 0, "pnl_usd": 0.0, "win_rate": ""},
+            empty,
+            empty,
             empty,
             empty,
             empty,
@@ -306,8 +379,8 @@ def build_diagnostic_funnel(
             {"stage": "pregame_matches", "count": pregame_matches, "description": "matches starting in next 30 minutes"},
             {"stage": "started_matches", "count": started_matches, "description": "confirmed live matches started"},
             {"stage": "matches_75_plus", "count": live75_matches, "description": "live matches in 75+ window"},
-            {"stage": "raw_price_window_rows", "count": raw_price_window_rows, "description": "raw live 0.95-0.99 rows before freshness filter"},
-            {"stage": "fresh_price_window_rows", "count": fresh_price_window_rows, "description": "fresh live 0.95-0.99 rows shown to dashboard"},
+            {"stage": "raw_price_window_rows", "count": raw_price_window_rows, "description": "raw live candidate rows before freshness filter"},
+            {"stage": "fresh_price_window_rows", "count": fresh_price_window_rows, "description": "fresh live candidate rows shown to dashboard"},
             {"stage": "no_play_rejected_rows", "count": no_play_rejected_rows, "description": "rows rejected by no-play rules"},
             {"stage": "proof_rows", "count": proof_rows, "description": "proof of winning rows evaluated"},
             {"stage": "proof_enter", "count": proof_enter, "description": "proof of winning enter decisions"},
@@ -387,6 +460,16 @@ def build_proof_debug_rows(
                 "red_card_in_last_10min": bool(payload.red_card_in_last_10min) if payload else False,
                 "stable_for_2_snapshots": bool(payload.stable_for_2_snapshots) if payload else False,
                 "stable_for_3_snapshots": bool(payload.stable_for_3_snapshots) if payload else False,
+                "detail_history_count": evaluation.diagnostics.get("detail_history_count", ""),
+                "has_statistics": evaluation.diagnostics.get("has_statistics", False),
+                "has_events": evaluation.diagnostics.get("has_events", False),
+                "source_fields_present_count": evaluation.diagnostics.get("source_fields_present_count", ""),
+                "source_fields_present": evaluation.diagnostics.get("source_fields_present", ""),
+                "data_confidence_flag": evaluation.diagnostics.get("data_confidence_flag", False),
+                "last_5_ready": evaluation.diagnostics.get("last_5_ready", False),
+                "last_10_ready": evaluation.diagnostics.get("last_10_ready", False),
+                "stable_snapshot_count": evaluation.diagnostics.get("stable_snapshot_count", ""),
+                "confidence_reason": evaluation.diagnostics.get("confidence_reason", ""),
             }
         )
     if not rows:
@@ -430,6 +513,7 @@ def dashboard_state() -> dict:
     raw_snapshots = read_table("snapshots")
     snapshots = filter_snapshots(SETTINGS, raw_snapshots)
     trades = read_table("trades")
+    under_buffer_exits = read_csv(resolve_path(SETTINGS["storage"].get("under_buffer_exit_csv", "data/snapshots/under_buffer_exit_log.csv")))
     events = load_discovery_events(SETTINGS)
     matches = build_match_overview(SETTINGS, events, snapshots) if events else pd.DataFrame()
     normalized_markets = normalize_events(events) if events else []
@@ -444,12 +528,15 @@ def dashboard_state() -> dict:
             )
         ),
     )
+    tracked_matches = TrackedMatches(resolve_path(SETTINGS["storage"]["tracked_matches_json"]))
+    capital_processes = CapitalProcessManager(SETTINGS, resolve_path(SETTINGS["storage"]["capital_processes_json"]))
     proof_runtime = ProofOfWinningRuntime(
         SETTINGS,
         FootballResearchStore(
             manifest_path=resolve_path(SETTINGS["storage"]["football_research_manifest_json"]),
             raw_dir=resolve_path(SETTINGS["storage"]["raw_dir"]),
         ),
+        tracked_matches,
     )
     spread_runtime = SpreadConfirmationRuntime(
         SETTINGS,
@@ -457,6 +544,7 @@ def dashboard_state() -> dict:
             manifest_path=resolve_path(SETTINGS["storage"]["football_research_manifest_json"]),
             raw_dir=resolve_path(SETTINGS["storage"]["raw_dir"]),
         ),
+        tracked_matches,
     )
     goal_totals_under_runtime = GoalTotalsUnderRuntime(
         SETTINGS,
@@ -464,6 +552,7 @@ def dashboard_state() -> dict:
             manifest_path=resolve_path(SETTINGS["storage"]["football_research_manifest_json"]),
             raw_dir=resolve_path(SETTINGS["storage"]["raw_dir"]),
         ),
+        tracked_matches,
     )
 
     if not matches.empty:
@@ -473,14 +562,20 @@ def dashboard_state() -> dict:
             live_mask = matches["live"] == True
             matches = matches[(~live_mask) | (matches["confirmed_by_sports_api"] == True)]
 
-    open_trades = trades[trades["status"] == "open"].copy() if not trades.empty and "status" in trades else pd.DataFrame()
-    if not open_trades.empty and SETTINGS.get("dashboard", {}).get("show_only_today_open_trades", True):
-        entry_ts = pd.to_datetime(open_trades["entry_timestamp"], utc=True, errors="coerce")
-        open_trades = open_trades[entry_ts.dt.strftime("%Y-%m-%d") == datetime.now(timezone.utc).strftime("%Y-%m-%d")]
-    if not open_trades.empty:
-        open_trades["bet_label"] = open_trades.apply(lambda row: build_bet_label(str(row.get("question", "")), str(row.get("side", ""))), axis=1)
-        open_trades["entry_minute"] = pd.to_numeric(open_trades.get("elapsed", ""), errors="coerce").round(1)
-        open_trades["entry_score"] = open_trades.get("score", "")
+    all_open_trades = trades[trades["status"] == "open"].copy() if not trades.empty and "status" in trades else pd.DataFrame()
+    stale_open_trades = pd.DataFrame()
+    open_trades = all_open_trades.copy()
+    if not all_open_trades.empty:
+        entry_ts = pd.to_datetime(all_open_trades["entry_timestamp"], utc=True, errors="coerce")
+        is_today = entry_ts.dt.strftime("%Y-%m-%d") == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        stale_open_trades = all_open_trades[~is_today].copy()
+        if SETTINGS.get("dashboard", {}).get("show_only_today_open_trades", True):
+            open_trades = all_open_trades[is_today].copy()
+        for frame in (open_trades, stale_open_trades):
+            if not frame.empty:
+                frame["bet_label"] = frame.apply(lambda row: build_bet_label(str(row.get("question", "")), str(row.get("side", ""))), axis=1)
+                frame["entry_minute"] = pd.to_numeric(frame.get("elapsed", ""), errors="coerce").round(1)
+                frame["entry_score"] = frame.get("score", "")
 
     live75 = pd.DataFrame()
     started = pd.DataFrame()
@@ -574,7 +669,7 @@ def dashboard_state() -> dict:
             )
             no_play_summary = summarize_no_play_rejections(no_play_rows)
 
-    resolved = trades[trades["status"] != "open"] if not trades.empty and "status" in trades else pd.DataFrame()
+    resolved = trades[trades["status"].astype(str) == "resolved"] if not trades.empty and "status" in trades else pd.DataFrame()
     if not resolved.empty:
         resolved = resolved.copy()
         resolved["bet_label"] = resolved.apply(lambda row: build_bet_label(str(row.get("question", "")), str(row.get("side", ""))), axis=1)
@@ -582,7 +677,24 @@ def dashboard_state() -> dict:
         resolved["entry_score"] = resolved.get("score", "")
         resolved["win"] = pd.to_numeric(resolved.get("pnl_usd", ""), errors="coerce").map(lambda value: "WIN" if value > 0 else "")
         resolved["loss"] = pd.to_numeric(resolved.get("pnl_usd", ""), errors="coerce").map(lambda value: "LOSS" if value < 0 else "")
-    trade_summary = summarize_trades(trades)
+    capital_summary, capital_rows = capital_processes.summary(load_trades(resolve_path(SETTINGS["storage"]["trade_csv"])))
+    capital_start_balance = float(SETTINGS.get("capital_processes", {}).get("start_balance", 10.0))
+    capital_usage = summarize_capital_usage(pd.DataFrame(capital_rows), start_balance=capital_start_balance)
+    yesterday_capital_usage = summarize_yesterday_capital_usage(trades, start_balance=capital_start_balance)
+    capital_record = update_capital_high_watermark(
+        resolve_path(SETTINGS["storage"].get("capital_high_watermark_json", "data/snapshots/capital_high_watermark.json")),
+        yesterday_capital_usage,
+    )
+    trade_summary = summarize_trades(trades) | capital_usage | yesterday_capital_usage | capital_record
+    under_buffer_exit_summary, under_buffer_exit_rows = summarize_under_buffer_exit_scenario(under_buffer_exits, trades)
+    trade_summary["pnl_v2_usd"] = round(
+        float(trade_summary.get("pnl_usd", 0.0) or 0.0) + float(under_buffer_exit_summary.get("delta_pnl_usd", 0.0) or 0.0),
+        4,
+    )
+    process_focus_summary, process_focus_rows = summarize_process_focus(
+        pd.DataFrame(capital_rows),
+        start_balance=capital_start_balance,
+    )
     proof_debug = build_proof_debug_rows(latest, markets_by_key, matcher, proof_runtime) if not latest.empty else pd.DataFrame()
     spread_debug = (
         build_spread_debug_rows(
@@ -624,6 +736,16 @@ def dashboard_state() -> dict:
         attribution_price_bucket,
         attribution_goal_buffer,
     ) = summarize_trade_attribution(trades)
+    missing_fixture_summary, missing_fixture_rows = summarize_missing_fixture_diagnostics(
+        proof_debug,
+        spread_debug,
+        goal_totals_under_debug,
+    )
+    missing_detail_history_summary, missing_detail_history_rows = summarize_missing_detail_history_diagnostics(
+        proof_debug,
+        spread_debug,
+        goal_totals_under_debug,
+    )
     funnel_summary, funnel_rows = build_diagnostic_funnel(
         events=events,
         matches=matches,
@@ -669,6 +791,7 @@ def dashboard_state() -> dict:
         "side",
         "entry_price",
         "stake_usd",
+        "max_stake_usd_at_entry",
         "shares",
         "entry_minute",
         "entry_score",
@@ -708,16 +831,56 @@ def dashboard_state() -> dict:
             "raw_snapshots": len(raw_snapshots),
             "latest_snapshot": latest_snapshot,
             "open_trades": len(open_trades),
-            "resolved": len(resolved),
+            "resolved": int((trades.get("status", pd.Series(dtype=str)).astype(str) == "resolved").sum()) if not trades.empty and "status" in trades else 0,
             "no_play_rejections": len(no_play_latest),
             "pnl_usd": trade_summary["pnl_usd"],
+            "pnl_v2_usd": trade_summary["pnl_v2_usd"],
             "win_rate": trade_summary["win_rate"],
+            "capital_runs": capital_usage["capital_runs"],
+            "continuations": capital_usage["continuations"],
+            "max_parallel_runs": capital_usage["max_parallel_runs"],
+            "min_start_capital": capital_usage["min_start_capital"],
+            "yday_peak_open_trades": yesterday_capital_usage["yday_peak_open_trades"],
+            "yday_peak_stake_locked": yesterday_capital_usage["yday_peak_stake_locked"],
+            "yday_min_capital": yesterday_capital_usage["yday_min_capital"],
+            "capital_record": capital_record["capital_record"],
+            "capital_record_date": capital_record["capital_record_date"],
         },
         "trade_summary": trade_summary,
+        "under_buffer_exit_summary": under_buffer_exit_summary,
+        "under_buffer_exit_rows": compact_rows(
+            sort_if_present(under_buffer_exit_rows, "timestamp_utc", ascending=False),
+            [
+                "timestamp_utc",
+                "event_title",
+                "question",
+                "score",
+                "elapsed",
+                "entry_price",
+                "exit_bid",
+                "hold_pnl_usd",
+                "exit_pnl_usd",
+                "delta_pnl_usd",
+            ],
+            30,
+        ),
+        "capital_process_summary": capital_summary,
+        "process_focus_summary": process_focus_summary,
         "pnl_attribution_summary": attribution_summary,
         "diagnostic_funnel_summary": funnel_summary,
         "diagnostic_funnel_rows": compact_rows(funnel_rows, ["stage", "count", "description"], 30),
         "open_trades": compact_rows(sort_if_present(open_trades, "entry_timestamp", ascending=False), trade_cols, 25),
+        "stale_open_trades": compact_rows(sort_if_present(stale_open_trades, "entry_timestamp", ascending=False), trade_cols, 25),
+        "process_focus_rows": compact_rows(
+            pd.DataFrame(process_focus_rows),
+            ["process_id", "status", "current_balance", "next_stake", "profit_over_start", "step_count", "open_trade_id", "last_result"],
+            25,
+        ),
+        "capital_process_rows": compact_rows(
+            pd.DataFrame(capital_rows),
+            ["process_id", "status", "current_balance", "target_balance", "step_count", "wins", "losses", "open_trade_id", "last_result"],
+            40,
+        ),
         "resolved_trades": compact_rows(sort_if_present(resolved, "resolved_at", ascending=False), ["win", "loss"] + trade_cols + ["resolved_at", "result", "pnl_usd"], 40),
         "live75": compact_rows(live75, match_cols, 30),
         "started": compact_rows(started, match_cols, 30),
@@ -741,6 +904,18 @@ def dashboard_state() -> dict:
                 "match_minute",
                 "reason",
             ],
+            80,
+        ),
+        "missing_fixture_summary": missing_fixture_summary,
+        "missing_fixture_rows": compact_rows(
+            missing_fixture_rows,
+            ["reason", "event_title", "league", "question", "rows"],
+            80,
+        ),
+        "missing_detail_history_summary": missing_detail_history_summary,
+        "missing_detail_history_rows": compact_rows(
+            missing_detail_history_rows,
+            ["reason", "event_title", "league", "question", "rows"],
             80,
         ),
         "proof_debug": compact_rows(
@@ -888,6 +1063,7 @@ def summarize_trades(trades: pd.DataFrame) -> dict:
             "losses": 0,
             "pushes": 0,
             "stale_closed": 0,
+            "voided_bad_feed": 0,
             "stake_usd": 0.0,
             "pnl_usd": 0.0,
             "win_rate": "",
@@ -899,20 +1075,242 @@ def summarize_trades(trades: pd.DataFrame) -> dict:
     wins = int((resolved_mask & (pnl > 0)).sum())
     losses = int((resolved_mask & (pnl < 0)).sum())
     pushes = int((resolved_mask & (pnl == 0)).sum())
-    resolved_count = int((status != "open").sum())
+    open_count = int((status == "open").sum())
+    resolved_count = int(resolved_mask.sum())
     graded = wins + losses
     return {
-        "total_trades": int(len(trades)),
-        "open_trades": int((status == "open").sum()),
+        "total_trades": open_count + resolved_count,
+        "open_trades": open_count,
         "resolved_trades": resolved_count,
         "wins": wins,
         "losses": losses,
         "pushes": pushes,
         "stale_closed": int((status == "stale_closed").sum()),
-        "stake_usd": round(float(stake.sum()), 2),
-        "pnl_usd": round(float(pnl.sum()), 2),
+        "voided_bad_feed": int((status == "voided_bad_feed").sum()),
+        "stake_usd": round(float(stake[resolved_mask].sum()), 2),
+        "pnl_usd": round(float(pnl[resolved_mask].sum()), 2),
         "win_rate": f"{round((wins / graded) * 100, 1)}%" if graded else "",
     }
+
+
+def summarize_under_buffer_exit_scenario(exits: pd.DataFrame, trades: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
+    empty_summary = {
+        "triggered": 0,
+        "hold_pnl_usd": 0.0,
+        "exit_rule_pnl_usd": 0.0,
+        "delta_pnl_usd": 0.0,
+    }
+    if exits.empty:
+        return empty_summary, pd.DataFrame()
+
+    frame = exits.copy()
+    if "trade_id" in frame.columns:
+        frame = frame.drop_duplicates(subset=["trade_id"], keep="first")
+    frame["exit_pnl_usd"] = pd.to_numeric(frame.get("exit_pnl_usd", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+
+    if not trades.empty and "trade_id" in trades.columns and "pnl_usd" in trades.columns:
+        trade_pnl = trades[["trade_id", "pnl_usd"]].copy()
+        trade_pnl["hold_pnl_usd"] = pd.to_numeric(trade_pnl["pnl_usd"], errors="coerce")
+        frame = frame.merge(trade_pnl[["trade_id", "hold_pnl_usd"]], on="trade_id", how="left")
+    else:
+        frame["hold_pnl_usd"] = pd.NA
+
+    frame["hold_pnl_usd"] = pd.to_numeric(frame.get("hold_pnl_usd", pd.Series(dtype=float)), errors="coerce")
+    frame["delta_pnl_usd"] = frame["exit_pnl_usd"] - frame["hold_pnl_usd"].fillna(0.0)
+    resolved = frame[frame["hold_pnl_usd"].notna()]
+    summary = {
+        "triggered": int(len(frame)),
+        "resolved_compared": int(len(resolved)),
+        "hold_pnl_usd": round(float(resolved["hold_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
+        "exit_rule_pnl_usd": round(float(resolved["exit_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
+        "delta_pnl_usd": round(float(resolved["delta_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
+    }
+    for column in ["exit_bid", "entry_price", "elapsed", "total_goal_buffer", "hold_pnl_usd", "exit_pnl_usd", "delta_pnl_usd"]:
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce").round(4)
+    return summary, frame
+
+
+def summarize_process_focus(processes: pd.DataFrame, *, start_balance: float) -> tuple[dict[str, object], list[dict[str, object]]]:
+    if processes.empty:
+        return {
+            "active_processes": 0,
+            "active_above_start": 0,
+            "ready_processes": 0,
+            "in_trade_processes": 0,
+            "balance_above_start": 0.0,
+        }, []
+    frame = processes.copy()
+    frame["current_balance"] = pd.to_numeric(frame.get("current_balance", ""), errors="coerce").fillna(0.0)
+    frame["step_count"] = pd.to_numeric(frame.get("step_count", ""), errors="coerce").fillna(0).astype(int)
+    active = frame[frame.get("status", "").astype(str).isin(["ready", "in_trade"])].copy()
+    active["profit_over_start"] = (active["current_balance"] - float(start_balance)).round(4)
+    active["next_stake"] = active["current_balance"].round(4)
+    above_start = active[active["current_balance"] > float(start_balance)].copy()
+    summary = {
+        "active_processes": int(len(active)),
+        "active_above_start": int(len(above_start)),
+        "ready_processes": int((active["status"].astype(str) == "ready").sum()) if not active.empty else 0,
+        "in_trade_processes": int((active["status"].astype(str) == "in_trade").sum()) if not active.empty else 0,
+        "balance_above_start": round(float(above_start["current_balance"].sum()), 4) if not above_start.empty else 0.0,
+    }
+    rows = sort_if_present(above_start, "current_balance", ascending=False).to_dict(orient="records") if not above_start.empty else []
+    return summary, rows
+
+
+def summarize_capital_usage(processes: pd.DataFrame, *, start_balance: float) -> dict[str, object]:
+    if processes.empty:
+        return {
+            "capital_runs": 0,
+            "continuations": 0,
+            "max_parallel_runs": 0,
+            "min_start_capital": 0.0,
+        }
+    frame = processes.copy()
+    frame["step_count"] = pd.to_numeric(frame.get("step_count", ""), errors="coerce").fillna(0).astype(int)
+    total_runs = int(frame["process_id"].astype(str).replace("", pd.NA).dropna().nunique()) if "process_id" in frame else int(len(frame))
+    total_steps = int(frame["step_count"].sum())
+    max_parallel = max_parallel_processes(frame)
+    return {
+        "capital_runs": total_runs,
+        "continuations": max(total_steps - total_runs, 0),
+        "max_parallel_runs": max_parallel,
+        "min_start_capital": round(float(max_parallel) * float(start_balance), 2),
+    }
+
+
+def summarize_yesterday_capital_usage(trades: pd.DataFrame, *, start_balance: float, timezone_name: str = "Europe/Berlin") -> dict[str, object]:
+    empty = {
+        "yday_trades": 0,
+        "yday_capital_runs": 0,
+        "yday_peak_open_trades": 0,
+        "yday_peak_stake_locked": 0.0,
+        "yday_min_capital": 0.0,
+    }
+    if trades.empty or "entry_timestamp" not in trades:
+        return empty
+    tz = ZoneInfo(timezone_name)
+    yesterday = datetime.now(tz).date() - timedelta(days=1)
+    frame = trades.copy()
+    frame["_entry_dt"] = pd.to_datetime(frame.get("entry_timestamp", ""), errors="coerce", utc=True).dt.tz_convert(tz)
+    frame["_resolved_dt"] = pd.to_datetime(frame.get("resolved_at", ""), errors="coerce", utc=True).dt.tz_convert(tz)
+    day = frame[frame["_entry_dt"].dt.date == yesterday].copy()
+    if day.empty:
+        return empty
+    day["stake_usd_num"] = pd.to_numeric(day.get("stake_usd", ""), errors="coerce").fillna(0.0)
+    peak_open, peak_stake = peak_trade_capital(day, tz)
+    process_ids = day.get("process_id", pd.Series(dtype=str)).astype(str).replace("", pd.NA).dropna()
+    return {
+        "yday_date": yesterday.isoformat(),
+        "yday_trades": int(len(day)),
+        "yday_capital_runs": int(process_ids.nunique()),
+        "yday_peak_open_trades": peak_open,
+        "yday_peak_stake_locked": round(peak_stake, 2),
+        "yday_min_capital": round(max(peak_stake, peak_open * float(start_balance)), 2),
+    }
+
+
+def peak_trade_capital(trades: pd.DataFrame, tz: ZoneInfo) -> tuple[int, float]:
+    events: list[tuple[datetime, int, str, float]] = []
+    for idx, row in trades.iterrows():
+        entry = row.get("_entry_dt")
+        if pd.isna(entry):
+            continue
+        resolved = row.get("_resolved_dt")
+        if pd.isna(resolved):
+            resolved = datetime.now(tz)
+        stake = float(row.get("stake_usd_num") or 0.0)
+        trade_id = str(row.get("trade_id") or idx)
+        start_dt = entry.to_pydatetime() if hasattr(entry, "to_pydatetime") else entry
+        end_dt = resolved.to_pydatetime() if hasattr(resolved, "to_pydatetime") else resolved
+        events.append((start_dt, 1, trade_id, stake))
+        events.append((end_dt, -1, trade_id, stake))
+    active: dict[str, float] = {}
+    peak_open = 0
+    peak_stake = 0.0
+    for _, delta, trade_id, stake in sorted(events, key=lambda item: (item[0], item[1])):
+        if delta > 0:
+            active[trade_id] = stake
+        else:
+            active.pop(trade_id, None)
+        peak_open = max(peak_open, len(active))
+        peak_stake = max(peak_stake, sum(active.values()))
+    return peak_open, peak_stake
+
+
+def update_capital_high_watermark(path: Path, yesterday_usage: dict[str, object]) -> dict[str, object]:
+    current = load_capital_high_watermark(path)
+    candidate = float(yesterday_usage.get("yday_min_capital") or 0.0)
+    if candidate > float(current.get("capital_record", 0.0) or 0.0):
+        current = {
+            "capital_record": round(candidate, 2),
+            "capital_record_date": str(yesterday_usage.get("yday_date") or ""),
+            "capital_record_peak_open_trades": int(yesterday_usage.get("yday_peak_open_trades") or 0),
+            "capital_record_peak_stake_locked": round(float(yesterday_usage.get("yday_peak_stake_locked") or 0.0), 2),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    return {
+        "capital_record": float(current.get("capital_record", 0.0) or 0.0),
+        "capital_record_date": str(current.get("capital_record_date", "") or ""),
+        "capital_record_peak_open_trades": int(current.get("capital_record_peak_open_trades", 0) or 0),
+        "capital_record_peak_stake_locked": float(current.get("capital_record_peak_stake_locked", 0.0) or 0.0),
+    }
+
+
+def load_capital_high_watermark(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {
+            "capital_record": 0.0,
+            "capital_record_date": "",
+            "capital_record_peak_open_trades": 0,
+            "capital_record_peak_stake_locked": 0.0,
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError:
+        return {
+            "capital_record": 0.0,
+            "capital_record_date": "",
+            "capital_record_peak_open_trades": 0,
+            "capital_record_peak_stake_locked": 0.0,
+        }
+    return payload if isinstance(payload, dict) else {}
+
+
+def max_parallel_processes(processes: pd.DataFrame) -> int:
+    if processes.empty or "created_at" not in processes:
+        return int(len(processes))
+    events: list[tuple[datetime, int]] = []
+    now = datetime.now(timezone.utc)
+    for _, row in processes.iterrows():
+        start = parse_process_time(row.get("created_at")) or parse_process_time(row.get("started_at"))
+        if start is None:
+            continue
+        end = parse_process_time(row.get("closed_at")) or now
+        events.append((start, 1))
+        events.append((end, -1))
+    if not events:
+        return int(len(processes))
+    active = 0
+    peak = 0
+    for _, delta in sorted(events, key=lambda item: (item[0], item[1])):
+        active += delta
+        peak = max(peak, active)
+    return peak
+
+
+def parse_process_time(value: object) -> datetime | None:
+    if value in ("", None):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 class Handler(BaseHTTPRequestHandler):

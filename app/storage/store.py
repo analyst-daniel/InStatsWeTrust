@@ -45,14 +45,21 @@ class Store:
                 CREATE TABLE IF NOT EXISTS trades (
                     trade_id TEXT PRIMARY KEY, entry_timestamp TEXT, event_slug TEXT,
                     event_title TEXT, market_id TEXT, market_slug TEXT, question TEXT,
-                    token_id TEXT, side TEXT, entry_price REAL, stake_usd REAL,
-                    shares REAL, elapsed REAL, score TEXT, period TEXT, entry_reason TEXT, status TEXT,
+                    token_id TEXT, side TEXT, entry_price REAL, stake_usd REAL, max_stake_usd_at_entry REAL,
+                    shares REAL, elapsed REAL, score TEXT, period TEXT, entry_reason TEXT,
+                    process_id TEXT, process_step INTEGER, process_balance_before REAL, process_target_balance REAL,
+                    status TEXT,
                     first_hit_99_at TEXT, first_hit_999_at TEXT, max_favorable_price REAL,
                     resolved_at TEXT, result TEXT, pnl_usd REAL
                 )
                 """
             )
             self._ensure_column(conn, "trades", "entry_reason", "TEXT")
+            self._ensure_column(conn, "trades", "max_stake_usd_at_entry", "REAL")
+            self._ensure_column(conn, "trades", "process_id", "TEXT")
+            self._ensure_column(conn, "trades", "process_step", "INTEGER")
+            self._ensure_column(conn, "trades", "process_balance_before", "REAL")
+            self._ensure_column(conn, "trades", "process_target_balance", "REAL")
             self._ensure_column(conn, "snapshots", "market_type", "TEXT")
             self._ensure_column(conn, "snapshots", "spread_listed_team", "TEXT")
             self._ensure_column(conn, "snapshots", "spread_listed_line", "REAL")
@@ -108,13 +115,15 @@ class Store:
                 """
                 INSERT OR REPLACE INTO trades (
                     trade_id, entry_timestamp, event_slug, event_title, market_id, market_slug,
-                    question, token_id, side, entry_price, stake_usd, shares, elapsed,
-                    score, period, entry_reason, status, first_hit_99_at, first_hit_999_at,
+                    question, token_id, side, entry_price, stake_usd, max_stake_usd_at_entry, shares, elapsed,
+                    score, period, entry_reason, process_id, process_step, process_balance_before, process_target_balance,
+                    status, first_hit_99_at, first_hit_999_at,
                     max_favorable_price, resolved_at, result, pnl_usd
                 ) VALUES (
                     :trade_id,:entry_timestamp,:event_slug,:event_title,:market_id,:market_slug,
-                    :question,:token_id,:side,:entry_price,:stake_usd,:shares,:elapsed,
-                    :score,:period,:entry_reason,:status,:first_hit_99_at,:first_hit_999_at,
+                    :question,:token_id,:side,:entry_price,:stake_usd,:max_stake_usd_at_entry,:shares,:elapsed,
+                    :score,:period,:entry_reason,:process_id,:process_step,:process_balance_before,:process_target_balance,
+                    :status,:first_hit_99_at,:first_hit_999_at,
                     :max_favorable_price,:resolved_at,:result,:pnl_usd
                 )
                 """,

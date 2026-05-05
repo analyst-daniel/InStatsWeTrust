@@ -8,6 +8,18 @@ from app.live_state.cache import LiveStateCache, slugify
 from app.normalize.models import LiveState, NormalizedMarket
 
 
+GENERIC_TEAM_TOKENS = {
+    "cf",
+    "club",
+    "de",
+    "fc",
+    "la",
+    "real",
+    "sc",
+    "the",
+}
+
+
 class LiveStateMatcher:
     def __init__(self, cache: LiveStateCache, max_age_seconds: int = 300) -> None:
         self.cache = cache
@@ -90,8 +102,12 @@ class LiveStateMatcher:
 
 
 def team_tokens(value: str) -> set[str]:
-    cleaned = re.sub(r"\b(exact|score|spread|total|more|markets|fc|cf|sc|club|de|la|the|vs|v)\b", " ", value.lower())
-    return {token for token in re.findall(r"[a-z0-9]+", cleaned) if len(token) >= 2}
+    cleaned = re.sub(r"\b(exact|score|spread|total|more|markets|vs|v)\b", " ", value.lower())
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", cleaned)
+        if len(token) >= 2 and token not in GENERIC_TEAM_TOKENS
+    }
 
 
 def team_sides(title: str) -> list[set[str]]:
