@@ -1,169 +1,113 @@
 # Polymarket Self Hosted
 
-Standalone read-only Polymarket sports scanner and paper-trading system.
+Live Polymarket soccer scanner, paper trading system and dry-run execution checker.
 
-This project does not use Bullpen and does not place real orders. It uses public/no-auth Polymarket endpoints for discovery, live sports state, and market data. Real execution is only scaffolded in `app/execution/` and intentionally disabled.
+The bot does not place real orders. Current execution mode is `dry_run`: it can check the real Polymarket orderbook and simulate whether an order could be filled, but live order placement is intentionally disabled.
 
-## Setup
+## Start
 
-```powershell
-cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-If you do not use a venv, run the same scripts with your system Python.
-
-## Quick Start: Windows PowerShell
-
-If the project is already installed and you just want to start everything again, use this exact order:
-
-1. Open PowerShell
-2. Enter the project directory:
+Open PowerShell:
 
 ```powershell
 cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-```
-
-3. Restart all runtime windows:
-
-```powershell
 .\restart_all_windows.bat
 ```
 
-That command closes old runtime windows and starts the project again in separate external terminals.
+This restarts the whole system:
 
-If you are in a different folder first, check where you are:
+- live state
+- Football API fallback
+- scanner / paper trader / dry-run execution
+- settlement
+- dashboard
 
-```powershell
-pwd
+Dashboard:
+
+```text
+http://127.0.0.1:8765
 ```
 
-If needed, list the batch files in the project:
+After code or dashboard layout changes, refresh the browser with `Ctrl+F5`.
+
+## Stop
 
 ```powershell
-Get-ChildItem *.bat
-```
-
-The most important start commands are:
-
-```powershell
-.\start_all_windows.bat
-.\restart_all_windows.bat
+cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
 .\stop_all_windows.bat
 ```
 
-Recommended daily usage:
+## One-Off Commands
+
+Run one scanner cycle:
 
 ```powershell
-cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-.\restart_all_windows.bat
+.\scan_once.bat
 ```
 
-## Run Flow
-
-Terminal 1, live sports state:
+Run settlement once:
 
 ```powershell
-cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-.\.venv\Scripts\Activate.ps1
-python scripts\run_live_state.py
+.\settlement_once.bat
 ```
 
-Terminal 2, scanner and paper trader:
+Create daily report:
 
 ```powershell
-cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-.\.venv\Scripts\Activate.ps1
-python scripts\run_scanner.py
+.\daily_report.bat
 ```
 
-Terminal 3, dashboard:
+## Current Logic
 
-```powershell
-cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-.\.venv\Scripts\Activate.ps1
-python scripts\run_dashboard.py
+Main strategy config is in:
+
+```text
+config/settings.yaml
 ```
 
-Terminal 4, settlement and daily reports:
+Important current assumptions:
 
-```powershell
-cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-.\.venv\Scripts\Activate.ps1
-python scripts\run_settlement.py
+- soccer only
+- normal entry window: `70 <= minute < 89`
+- dry-run execution is enabled
+- real live execution is disabled
+- runs start from `10` units
+- run target is `21` units
+- current dashboard run calculation uses the user run method:
+  - start run at `10`
+  - bet all current run capital
+  - first lost closes the run
+  - reaching `21` closes the run as win
+
+## Dashboard KPI
+
+Right-side KPI uses run-based units:
+
+- `Hold`: run result if every trade is held to settlement
+- `Full exit`: run result with full V2 exit
+- `50% exit`: run result with half V2 exit
+- `Liquidity exit`: run result using confirmed exit liquidity
+
+The `Runs` section also uses the same run method.
+
+## Data Files
+
+Main files:
+
+```text
+data/snapshots/trade_log.csv
+data/snapshots/snapshot_log.csv
+data/snapshots/under_buffer_exit_log.csv
+data/snapshots/execution_log.csv
+data/db/polymarket_self_hosted.sqlite
+data/logs/system.log
+data/logs/errors.log
+data/daily/
 ```
 
-Optional Football API fallback for live soccer minute/score:
+`execution_log.csv` appears only after a strategy signal reaches the dry-run execution stage.
 
-```powershell
-setx APISPORTS_KEY "your_api_key_here"
-# open a new terminal after setx
-cd C:\Users\Daniel\Desktop\POLY_BET\polymarket_self_hosted
-.\.venv\Scripts\Activate.ps1
-python scripts\run_football_fallback.py
-```
+## Safety
 
-Batch shortcuts are also available:
+Do not put real funds into this system.
 
-```powershell
-start_all_windows.bat
-restart_all_windows.bat
-stop_all_windows.bat
-start_live_state.bat
-start_football_fallback.bat
-start_scanner.bat
-start_settlement.bat
-start_dashboard.bat
-start_js_dashboard.bat
-start_terminal_dashboard.bat
-scan_once.bat
-settlement_once.bat
-daily_report.bat
-football_once.bat
-live_state_status.bat
-live_matches_status.bat
-prune_live_state_cache.bat
-close_stale_open_trades.bat
-```
-
-## Strategy Defaults
-
-Configured in `config/settings.yaml`:
-
-- sport: soccer
-- elapsed: `70 <= elapsed < 89`
-- price: `0.90 <= ask < 0.99`
-- capital process start balance: `$10`
-- capital process target balance: `$21`
-- max entries per market: `5`
-- no paper entry without live state
-- real execution disabled
-
-The scanner logs all observed markets in the target price range to the snapshot log. It opens paper trades only when live state and risk rules pass.
-
-## Data
-
-- `data/raw/`: raw Gamma API responses
-- `data/snapshots/snapshot_log.csv`: all observed qualifying price-range markets
-- `data/snapshots/trade_log.csv`: paper trades only
-- `data/snapshots/live_state_cache.json`: latest Sports WebSocket state
-- `data/snapshots/football_api_budget.json`: daily API-FOOTBALL request budget counter
-- `data/db/polymarket_self_hosted.sqlite`: queryable dashboard database
-- `data/logs/system.log`: runtime logs
-- `data/logs/errors.log`: errors
-- `data/daily/trade_report_YYYY-MM-DD.csv`: daily paper trade export
-- `data/daily/summary_YYYY-MM-DD.md`: daily summary
-
-## Public No-Auth Sources
-
-- Gamma REST: `https://gamma-api.polymarket.com/events`, `/markets`, `/public-search`
-- Sports WebSocket: `wss://sports-api.polymarket.com/ws`
-- CLOB public REST: `https://clob.polymarket.com/book`, `/books`, `/price`, `/prices`, `/spreads`, `/last-trades-prices`
-- CLOB market WebSocket: `wss://ws-subscriptions-clob.polymarket.com/ws/market`
-- Data API research endpoint: `https://data-api.polymarket.com/trades`
-
-## Future Real Trading
-
-Authenticated CLOB execution would be inserted under `app/execution/`. It must add credentials, signing, geoblock pre-checks, order validation, kill switch enforcement, and explicit enablement. The current code raises an exception for real order placement.
+`execution.mode: live` is intentionally blocked in code. If enabled by mistake, the scanner should stop with an error instead of placing a real order.

@@ -2,10 +2,19 @@ const REFRESH_MS = 10000;
 let latestData = {};
 
 const sections = {
+  execution_rows: [
+    "timestamp_utc", "action", "status", "event_title", "question", "side", "limit_price",
+    "requested_shares", "filled_shares", "avg_fill_price", "notional_usd", "best_bid", "best_ask", "levels_used", "reason"
+  ],
   diagnostic_funnel_rows: ["stage", "count", "description"],
   under_buffer_exit_rows: [
     "timestamp_utc", "event_title", "question", "score", "elapsed", "entry_price", "exit_bid",
-    "hold_pnl_usd", "exit_pnl_usd", "delta_pnl_usd"
+    "exit_max_sell_usd_at_bid", "exit_liquidity_covers_trade", "hold_pnl_usd", "exit_pnl_usd",
+    "exit_50_pnl_usd", "exit_liquidity_pnl_usd", "delta_pnl_usd", "delta_50_pnl_usd", "delta_liquidity_pnl_usd"
+  ],
+  goal_cooldown_rows: [
+    "entry_timestamp", "event_title", "question", "side", "entry_price", "score", "elapsed", "pnl_usd",
+    "recent_goal_at", "minutes_since_goal"
   ],
   pnl_attribution_strategy: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
   pnl_attribution_subtype: ["group", "trades", "wins", "losses", "pnl_usd", "win_rate"],
@@ -115,6 +124,7 @@ function label(column) {
 
 function renderTable(id, rows, columns) {
   const target = document.getElementById(id);
+  if (!target) return;
   if (!rows || rows.length === 0) {
     target.innerHTML = '<div class="empty">empty</div>';
     return;
@@ -173,33 +183,107 @@ function enrichTimeRows(rows) {
 }
 
 function renderStatus(health) {
-  const keys = [
-    "events", "soccer_matches", "live", "live75",
-    "unconfirmed_started", "unmatched", "fresh_candidates", "raw_snapshots", "open_trades", "resolved", "no_play_rejections",
-    "pnl_usd", "pnl_v2_usd", "win_rate", "yday_peak_open_trades", "yday_peak_stake_locked", "yday_min_capital", "capital_record", "capital_record_date"
+  const items = [
+    { key: "open_trades" },
+    { key: "soccer_matches" },
+    { key: "live" },
+    { key: "live75" },
+    { key: "run_hold_units", label: "Hold" },
+    { key: "run_full_exit_units", label: "Full exit" },
+    { key: "run_50_exit_units", label: "50% exit" },
+    { key: "run_liquidity_exit_units", label: "Liquidity exit" },
+    { key: "win_rate" },
+    { key: "wins", label: "WIN", className: "kpi-win" },
+    { key: "losses", label: "LOST", className: "kpi-loss" },
+    { key: "resolved" },
   ];
-  document.getElementById("status").innerHTML = keys.map((key) => (
-    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(health[key] ?? 0))}</strong></div>`
+  document.getElementById("status").innerHTML = items.map((item) => (
+    `<div class="metric ${item.className || ""}"><span>${item.label || label(item.key)}</span><strong>${escapeHtml(statusValue(health, item.key))}</strong></div>`
   )).join("");
+}
+
+function statusValue(health, key) {
+  const value = health[key] ?? 0;
+  if (["run_hold_units", "run_full_exit_units", "run_50_exit_units", "run_liquidity_exit_units"].includes(key)) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(2) : String(value);
+  }
+  return String(value);
 }
 
 function renderSummary(summary) {
   const target = document.getElementById("trade_summary");
-  const keys = [
-    "total_trades", "open_trades", "resolved_trades", "wins", "losses", "pushes",
-    "stale_closed", "voided_bad_feed", "stake_usd", "pnl_usd", "win_rate",
-    "capital_runs", "continuations", "max_parallel_runs", "min_start_capital",
-    "yday_trades", "yday_capital_runs", "yday_peak_open_trades", "yday_peak_stake_locked", "yday_min_capital",
-    "capital_record", "capital_record_date", "capital_record_peak_open_trades", "capital_record_peak_stake_locked"
+  const resultKeys = ["win_rate", "open_trades", "resolved_trades", "wins", "losses", "pushes", "total_trades"];
+  if (target) {
+    target.innerHTML = resultKeys.map((key) => (
+      metricHtml(key, summaryValue(summary, key))
+    )).join("");
+  }
+  renderCapitalMenu(summary);
+  renderProcessMenu(latestData.run_method_summary || {}, latestData.user_run_rows || []);
+}
+
+function renderCapitalMenu(summary) {
+  const target = document.getElementById("capital_menu_summary");
+  const keys = ["capital_record_peak_stake_locked", "capital_record_peak_open_trades", "capital_record_date", "stake_usd"];
+  target.innerHTML = keys.map((key) => metricHtml(key, summaryValue(summary, key))).join("");
+}
+
+function renderProcessMenu(runSummary, runs) {
+  const target = document.getElementById("process_menu_summary");
+  const openRuns = Number(runSummary.runs_open || 0);
+  const runsWin = Number(runSummary.runs_win || 0);
+  const runsLost = Number(runSummary.runs_lost || 0);
+  const items = [
+    ["open runs", openRuns],
+    ["runs win", runsWin],
+    ["runs lost", runsLost],
+    ["capital runs", Number(runSummary.runs_total || 0)],
+    ["start capital", formatNumber(runSummary.start_capital)],
+    ["target capital", formatNumber(runSummary.target_capital)],
   ];
-  target.innerHTML = keys.map((key) => (
-    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(summaryValue(summary, key))}</strong></div>`
-  )).join("");
+  target.innerHTML = items.map(([key, value]) => metricHtml(key, value)).join("");
+  renderProcessRuns(runs);
+}
+
+function renderProcessRuns(runs) {
+  const target = document.getElementById("process_run_cards");
+  const rows = [...(runs || [])]
+    .filter((row) => String(row.status || "") === "ready")
+    .sort((a, b) => Number(a.run || 0) - Number(b.run || 0));
+  if (!rows.length) {
+    target.innerHTML = '<div class="empty">no live processes</div>';
+    return;
+  }
+  target.innerHTML = rows.map((row, index) => {
+    const bets = Number(row.bets || 0);
+    const current = formatNumber(row.capital);
+    const targetBalance = formatNumber(row.target_capital);
+    const status = row.status || "";
+    return `
+      <div class="process-card">
+        <span>run ${row.run || index + 1}</span>
+        <strong>${bets} bets</strong>
+        <em>capital ${current} / ${targetBalance}</em>
+        <small>${escapeHtml(String(status))}</small>
+      </div>
+    `;
+  }).join("");
+}
+
+function metricHtml(key, value) {
+  return `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(value ?? ""))}</strong></div>`;
+}
+
+function formatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "");
+  return number.toFixed(4).replace(/\.?0+$/, "");
 }
 
 function summaryValue(summary, key) {
   if (key === "pnl_usd" && summary.pnl_v2_usd !== undefined && summary.pnl_v2_usd !== "") {
-    return `${summary.pnl_usd ?? ""} (v2: ${summary.pnl_v2_usd})`;
+    return `${summary.pnl_usd ?? ""} (v2 full: ${summary.pnl_v2_usd})`;
   }
   return String(summary[key] ?? "");
 }
@@ -226,10 +310,29 @@ function renderPnlAttribution(summary) {
 
 function renderUnderBufferExit(summary) {
   const target = document.getElementById("under_buffer_exit_summary");
-  const keys = ["triggered", "resolved_compared", "hold_pnl_usd", "exit_rule_pnl_usd", "delta_pnl_usd"];
-  target.innerHTML = keys.map((key) => (
+  const keys = [
+    "triggered", "resolved_compared", "hold_pnl_usd", "exit_rule_pnl_usd", "exit_50_pnl_usd",
+    "liquidity_compared", "exit_liquidity_pnl_usd", "delta_pnl_usd", "delta_50_pnl_usd", "delta_liquidity_pnl_usd"
+  ];
+  target.innerHTML = [`<div class="metric group-title"><span>scenario</span><strong>Under buffer exit</strong></div>`].concat(keys.map((key) => (
     `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
-  )).join("");
+  ))).join("");
+}
+
+function renderExecution(summary) {
+  const target = document.getElementById("execution_summary");
+  const keys = ["mode", "orders", "buy_orders", "sell_orders", "filled", "skipped", "partial", "filled_notional_usd"];
+  target.innerHTML = [`<div class="metric group-title"><span>scenario</span><strong>Dry-run execution</strong></div>`].concat(keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  ))).join("");
+}
+
+function renderGoalCooldown(summary) {
+  const target = document.getElementById("goal_cooldown_summary");
+  const keys = ["cooldown_minutes", "total_under_trades", "blocked_trades", "blocked_pnl_usd", "pnl_without_blocked_usd"];
+  target.innerHTML = [`<div class="metric group-title"><span>scenario</span><strong>Goal cooldown research</strong></div>`].concat(keys.map((key) => (
+    `<div class="metric"><span>${label(key)}</span><strong>${escapeHtml(String(summary[key] ?? ""))}</strong></div>`
+  ))).join("");
 }
 
 function renderCapitalProcesses(summary) {
@@ -314,7 +417,9 @@ function render(data) {
       `updated=${data.updated_at} latest_snapshot=${data.health.latest_snapshot || "none"} refresh=10s`;
     renderStatus(data.health);
     renderSummary(data.trade_summary || {});
+    renderExecution(data.execution_summary || {});
     renderUnderBufferExit(data.under_buffer_exit_summary || {});
+    renderGoalCooldown(data.goal_cooldown_summary || {});
     renderProcessFocus(data.process_focus_summary || {});
     renderCapitalProcesses(data.capital_process_summary || {});
     renderDiagnosticFunnel(data.diagnostic_funnel_summary || {});

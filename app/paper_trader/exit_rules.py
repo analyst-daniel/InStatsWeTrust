@@ -24,7 +24,7 @@ class UnderBufferExitConfig:
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class UnderBufferExit:
     trade_id: str
     timestamp_utc: datetime
@@ -41,6 +41,9 @@ class UnderBufferExit:
     elapsed: float
     total_goal_buffer: float
     reason: str = "under_buffer_exit_0_5"
+    exit_max_sell_shares_at_bid: float | None = None
+    exit_max_sell_usd_at_bid: float | None = None
+    exit_liquidity_covers_trade: bool | None = None
 
 
 def under_buffer_exit_candidates(

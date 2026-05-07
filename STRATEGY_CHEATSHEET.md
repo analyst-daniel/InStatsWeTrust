@@ -15,6 +15,8 @@ Kazda pozycja musi najpierw przejsc wspolne filtry:
 - Spread orderbooka nie moze byc wiekszy niz `1.0`.
 - Liquidity minimum jest aktualnie `0`, czyli brak realnego filtra liquidity.
 - Cena musi utrzymac sie przez `5s` (`min_price_hold_seconds`).
+- Tryb wykonania jest ustawiony na `dry_run` (`execution.mode`), czyli bot sprawdza realny orderbook i zapisuje `would BUY/SELL`, ale nie wysyla prawdziwych zlecen.
+- Przy `execution.gate_entries: true` paper trade jest otwierany tylko wtedy, gdy dry-run widzi pelny fill po realnym orderbooku.
 - Risk manager musi pozwolic na wejscie:
   - dzienny limit paper trade'ow jest praktycznie wylaczony (`1000000`),
   - limit otwartych pozycji jest praktycznie wylaczony (`1000000`),
@@ -49,17 +51,28 @@ Warunki:
 - Strona `Yes` jest zawsze blokowana.
 - Score musi byc znany.
 - Roznica goli musi byc minimum `2`.
+- Jesli przewaga minimum `2` goli pojawia sie po swiezym golu, bot stosuje schodkowy wait wedlug minuty:
+  - `70:00-74:59` -> `3 minuty`,
+  - `75:00-79:59` -> `2 minuty`,
+  - `80:00-84:59` -> `1 minuta`,
+  - `85:00-88:59` -> `1 minuta`.
+  - Config: `no_draw.score_stability_wait_tiers`.
+  - Przyklad: po zmianie wyniku na `2-0` bot nie otwiera `No Draw` od razu.
+  - Scanner zaczyna licznik od pierwszego zobaczenia wyniku `2-0`.
+  - Jesli wynik zmieni sie np. na `3-1`, licznik startuje od nowa dla nowego score.
+  - W koncowce filtr jest krotki, ale nadal blokuje natychmiastowe wejscie po swiezym golu.
 - Nie ma obecnie osobnego runtime z live statystykami dla `No Draw`.
-- Nie ma obecnie filtra `recent goal` dla `No Draw`.
 - Nie ma obecnie filtra presji underdoga dla `No Draw`.
 
 Przyklad dozwolony:
 
-- `2-0`, `0-2`, `3-1`, `1-3`, minuta `70-88`, cena `0.60-0.99`.
+- `2-0`, `0-2`, `3-1`, `1-3`, minuta `70-74`, cena `0.60-0.99`, wynik stabilny przez minimum `3 minuty`.
+- `2-0`, `0-2`, `3-1`, `1-3`, minuta `75-79`, cena `0.60-0.99`, wynik stabilny przez minimum `2 minuty`.
+- `2-0`, `0-2`, `3-1`, `1-3`, minuta `80-88`, cena `0.60-0.99`, wynik stabilny przez minimum `1 minute`.
 
 Przyklad blokowany:
 
-- `1-0`, `2-1`, `1-1`, brak score, strona `Yes`.
+- `1-0`, `2-1`, `1-1`, brak score, strona `Yes`, albo swiezy wynik z roznica `2` goli przed uplywem waitu z harmonogramu.
 
 ## Match Winner / Proof Of Winning
 
@@ -204,10 +217,16 @@ Rownolegle zapisywany jest wariant V2:
 
 - Co by bylo, gdybysmy sprzedali under w momencie, gdy bufor spada do `0.5`.
 - Wynik jest zapisywany osobno w `data/snapshots/under_buffer_exit_log.csv`.
+- Przy przyszlych sygnalach zapisywana jest tez plynnosc orderbooka na `exit_bid`:
+  - `exit_max_sell_shares_at_bid`,
+  - `exit_max_sell_usd_at_bid`,
+  - `exit_liquidity_covers_trade`.
 - Dashboard pokazuje:
   - glowny `pnl_usd`,
-  - `pnl_v2_usd`,
-  - sekcje `Under Buffer Exit Scenario`.
+  - `pnl_v2_usd` dla pelnej sprzedazy po `exit_bid`,
+  - `pnl_v2_50_usd` dla sprzedazy `50%` pozycji i trzymania reszty do konca,
+  - `pnl_v2_liq_usd` dla wariantu skorygowanego o dostepna plynnosc na bidzie,
+  - sekcje `Parallel Research`.
 
 Warunki odpalenia scenariusza exit:
 
@@ -232,6 +251,63 @@ Cel:
 
 - Ograniczyc straty na underach, gdy pozycja nadal wygrywa, ale kazdy kolejny gol ja zabija.
 - Nie ruszac poznych wygranych przypadkow z minut `86-90`, ktore w backtescie czesto dochodzily do konca.
+
+Warianty liczenia:
+
+- `full exit`: sprzedajemy cala pozycje po `exit_bid`.
+- `50% exit`: sprzedajemy polowe pozycji po `exit_bid`, druga polowa jest liczona jak glowny trade do konca.
+- `liquidity adjusted`: sprzedajemy tylko tyle, ile pokrywa orderbook na `exit_bid`; reszta jest liczona jak glowny trade do konca.
+
+Historyczne rekordy sprzed dodania monitoringu plynnosci moga miec puste pola plynnosci, wiec `pnl_v2_liq_usd` zaczyna byc miarodajny dopiero dla nowych sygnalow.
+
+## Dry-run Execution
+
+To jest warstwa przygotowujaca system pod realnego bota bez grania prawdziwymi pieniedzmi.
+
+Aktualny config:
+
+- `execution.mode: dry_run`
+- `execution.gate_entries: true`
+- `execution.require_full_fill: true`
+- Log: `data/snapshots/execution_log.csv`
+
+Co robi bot:
+
+- Dla wejscia `BUY` pobiera realny CLOB orderbook.
+- Symuluje fill po askach `<= limit_price`.
+- Jesli nie da sie wypelnic calej pozycji, zapisuje `skipped_no_liquidity` albo `skipped_partial_fill` i nie otwiera paper trade.
+- Dla wyjscia V2 `SELL` pobiera realny orderbook.
+- Symuluje sprzedaz po bidach `>= limit_price`.
+- Dashboard pokazuje sekcje `Dry-run execution`.
+
+Bezpieczenstwo:
+
+- Tryb `live` jest celowo zablokowany w kodzie.
+- Zmiana configu na `execution.mode: live` zatrzyma scannera bledem zamiast wyslac realny order.
+- Dopiero osobny, swiadomy etap powinien dodac podpisywanie i wysylanie zlecen do Polymarket.
+
+### Goal Cooldown Research
+
+To jest osobne badanie, nie glowny filtr strategii.
+
+Hipoteza:
+
+- Nie wchodzic w under przez `5` minut po swiezym golu.
+- Ma to ograniczac wejscia w chaotyczne mecze bez uzywania live statystyk.
+
+Dane:
+
+- Research jest zapisywany do `data/snapshots/goal_cooldown_research.csv`.
+- Dashboard pokazuje sekcje `Goal cooldown research`.
+- Parametr: `parallel_research.goal_cooldown_minutes: 5`.
+
+Interpretacja:
+
+- `blocked_trades` pokazuje, ile historycznych underow zostaloby odrzuconych przez filtr.
+- `blocked_pnl_usd` pokazuje, jaki PnL mialy te odrzucone trade'y.
+- `pnl_without_blocked_usd` pokazuje wynik underow po usunieciu tych trade'ow.
+
+Na obecnym backtescie od `2026-05-03` filtr `5` minut po golu blokuje malo trade'ow i daje tylko mala poprawe, wiec nie jest jeszcze gotowy jako glowna zasada.
 
 ## Spread Confirmation V2
 
@@ -339,7 +415,7 @@ Capital processes sa wlaczone.
 ## Co obecnie nie jest objete statystykami
 
 - `No Draw` nie ma osobnej analizy live statystyk.
-- `No Draw` nie ma blokady po swiezym golu.
+- `No Draw` ma blokade stabilizacji score po swiezym wyniku z przewaga `2` goli, ale nie ma analizy presji/statystyk live.
 - `No Draw` nie ma filtra presji przegrywajacej druzyny.
 - `Under Goals V2` celowo nie wymaga live statystyk.
 - `Spread Confirmation V2` celowo nie wymaga live statystyk.

@@ -514,6 +514,8 @@ def dashboard_state() -> dict:
     snapshots = filter_snapshots(SETTINGS, raw_snapshots)
     trades = read_table("trades")
     under_buffer_exits = read_csv(resolve_path(SETTINGS["storage"].get("under_buffer_exit_csv", "data/snapshots/under_buffer_exit_log.csv")))
+    goal_cooldown_research = read_csv(resolve_path(SETTINGS["storage"].get("goal_cooldown_research_csv", "data/snapshots/goal_cooldown_research.csv")))
+    execution_log = read_csv(resolve_path(SETTINGS["storage"].get("execution_log_csv", "data/snapshots/execution_log.csv")))
     events = load_discovery_events(SETTINGS)
     matches = build_match_overview(SETTINGS, events, snapshots) if events else pd.DataFrame()
     normalized_markets = normalize_events(events) if events else []
@@ -687,10 +689,21 @@ def dashboard_state() -> dict:
     )
     trade_summary = summarize_trades(trades) | capital_usage | yesterday_capital_usage | capital_record
     under_buffer_exit_summary, under_buffer_exit_rows = summarize_under_buffer_exit_scenario(under_buffer_exits, trades)
+    run_method_summary = summarize_user_run_method(trades, under_buffer_exits)
+    execution_summary, execution_rows = summarize_execution_log(execution_log)
     trade_summary["pnl_v2_usd"] = round(
         float(trade_summary.get("pnl_usd", 0.0) or 0.0) + float(under_buffer_exit_summary.get("delta_pnl_usd", 0.0) or 0.0),
         4,
     )
+    trade_summary["pnl_v2_50_usd"] = round(
+        float(trade_summary.get("pnl_usd", 0.0) or 0.0) + float(under_buffer_exit_summary.get("delta_50_pnl_usd", 0.0) or 0.0),
+        4,
+    )
+    trade_summary["pnl_v2_liq_usd"] = round(
+        float(trade_summary.get("pnl_usd", 0.0) or 0.0) + float(under_buffer_exit_summary.get("delta_liquidity_pnl_usd", 0.0) or 0.0),
+        4,
+    )
+    goal_cooldown_summary, goal_cooldown_rows = summarize_goal_cooldown_research(goal_cooldown_research)
     process_focus_summary, process_focus_rows = summarize_process_focus(
         pd.DataFrame(capital_rows),
         start_balance=capital_start_balance,
@@ -832,9 +845,17 @@ def dashboard_state() -> dict:
             "latest_snapshot": latest_snapshot,
             "open_trades": len(open_trades),
             "resolved": int((trades.get("status", pd.Series(dtype=str)).astype(str) == "resolved").sum()) if not trades.empty and "status" in trades else 0,
+            "wins": trade_summary["wins"],
+            "losses": trade_summary["losses"],
             "no_play_rejections": len(no_play_latest),
             "pnl_usd": trade_summary["pnl_usd"],
             "pnl_v2_usd": trade_summary["pnl_v2_usd"],
+            "pnl_v2_50_usd": trade_summary["pnl_v2_50_usd"],
+            "pnl_v2_liq_usd": trade_summary["pnl_v2_liq_usd"],
+            "run_hold_units": run_method_summary["hold_units"],
+            "run_full_exit_units": run_method_summary["full_exit_units"],
+            "run_50_exit_units": run_method_summary["exit_50_units"],
+            "run_liquidity_exit_units": run_method_summary["liquidity_exit_units"],
             "win_rate": trade_summary["win_rate"],
             "capital_runs": capital_usage["capital_runs"],
             "continuations": capital_usage["continuations"],
@@ -847,7 +868,37 @@ def dashboard_state() -> dict:
             "capital_record_date": capital_record["capital_record_date"],
         },
         "trade_summary": trade_summary,
+        "run_method_summary": run_method_summary,
+        "user_run_rows": run_method_summary.get("full_exit_runs", []),
         "under_buffer_exit_summary": under_buffer_exit_summary,
+        "execution_summary": execution_summary,
+        "execution_rows": compact_rows(
+            sort_if_present(execution_rows, "timestamp_utc", ascending=False),
+            [
+                "timestamp_utc",
+                "action",
+                "status",
+                "event_title",
+                "question",
+                "side",
+                "limit_price",
+                "requested_shares",
+                "filled_shares",
+                "avg_fill_price",
+                "notional_usd",
+                "best_bid",
+                "best_ask",
+                "levels_used",
+                "reason",
+            ],
+            30,
+        ),
+        "goal_cooldown_summary": goal_cooldown_summary,
+        "goal_cooldown_rows": compact_rows(
+            sort_if_present(goal_cooldown_rows, "entry_timestamp", ascending=False),
+            ["entry_timestamp", "event_title", "question", "side", "entry_price", "score", "elapsed", "pnl_usd", "recent_goal_at", "minutes_since_goal"],
+            20,
+        ),
         "under_buffer_exit_rows": compact_rows(
             sort_if_present(under_buffer_exit_rows, "timestamp_utc", ascending=False),
             [
@@ -858,9 +909,15 @@ def dashboard_state() -> dict:
                 "elapsed",
                 "entry_price",
                 "exit_bid",
+                "exit_max_sell_usd_at_bid",
+                "exit_liquidity_covers_trade",
                 "hold_pnl_usd",
                 "exit_pnl_usd",
+                "exit_50_pnl_usd",
+                "exit_liquidity_pnl_usd",
                 "delta_pnl_usd",
+                "delta_50_pnl_usd",
+                "delta_liquidity_pnl_usd",
             ],
             30,
         ),
@@ -1093,12 +1150,207 @@ def summarize_trades(trades: pd.DataFrame) -> dict:
     }
 
 
+def summarize_user_run_method(trades: pd.DataFrame, exits: pd.DataFrame) -> dict[str, object]:
+    start_capital = float(SETTINGS.get("capital_processes", {}).get("start_balance", 10.0))
+    target_capital = float(SETTINGS.get("capital_processes", {}).get("target_balance", 21.0))
+    empty = {
+        "start_capital": start_capital,
+        "target_capital": target_capital,
+        "resolved_count": 0,
+        "hold_units": 0.0,
+        "full_exit_units": 0.0,
+        "exit_50_units": 0.0,
+        "liquidity_exit_units": 0.0,
+    }
+    if trades.empty:
+        return empty
+    frame = trades.copy()
+    status = frame.get("status", pd.Series(dtype=str)).astype(str)
+    pnl = pd.to_numeric(frame.get("pnl_usd", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+    entry = pd.to_numeric(frame.get("entry_price", pd.Series(dtype=float)), errors="coerce")
+    frame = frame[(status == "resolved") & (pnl != 0) & entry.gt(0)].copy()
+    if frame.empty:
+        return empty
+    frame["_pnl"] = pd.to_numeric(frame["pnl_usd"], errors="coerce").fillna(0.0)
+    frame["_entry_price"] = pd.to_numeric(frame["entry_price"], errors="coerce").fillna(0.0)
+    frame["_entry_timestamp"] = pd.to_datetime(frame.get("entry_timestamp", ""), utc=True, errors="coerce")
+    frame = frame.sort_values("_entry_timestamp")
+    exit_map = build_exit_map(exits)
+    hold_profit, hold_runs = simulate_user_runs(frame, exit_map, "hold", start_capital, target_capital)
+    full_profit, full_runs = simulate_user_runs(frame, exit_map, "full", start_capital, target_capital)
+    half_profit, half_runs = simulate_user_runs(frame, exit_map, "half", start_capital, target_capital)
+    liquidity_profit, liquidity_runs = simulate_user_runs(frame, exit_map, "liquidity", start_capital, target_capital)
+    result = {
+        "start_capital": start_capital,
+        "target_capital": target_capital,
+        "resolved_count": int(len(frame)),
+        "hold_units": hold_profit,
+        "full_exit_units": full_profit,
+        "exit_50_units": half_profit,
+        "liquidity_exit_units": liquidity_profit,
+        "runs_total": len(full_runs),
+        "runs_win": sum(1 for run in full_runs if run["status"] == "completed"),
+        "runs_lost": sum(1 for run in full_runs if run["status"] == "busted"),
+        "runs_open": sum(1 for run in full_runs if run["status"] == "ready"),
+        "full_exit_runs": full_runs,
+    }
+    return result
+
+
+def build_exit_map(exits: pd.DataFrame) -> dict[str, dict[str, float | bool]]:
+    if exits.empty or "trade_id" not in exits.columns:
+        return {}
+    rows = exits.drop_duplicates(subset=["trade_id"], keep="first").copy()
+    exit_map: dict[str, dict[str, float | bool]] = {}
+    for _, row in rows.iterrows():
+        trade_id = str(row.get("trade_id", ""))
+        if not trade_id:
+            continue
+        entry_price = to_float(row.get("entry_price"))
+        exit_bid = to_float(row.get("exit_bid"))
+        shares = to_float(row.get("shares"))
+        max_sell_shares = to_float(row.get("exit_max_sell_shares_at_bid"))
+        covers_raw = str(row.get("exit_liquidity_covers_trade", "")).lower()
+        covers = covers_raw in {"true", "1", "yes"}
+        if entry_price is None or exit_bid is None or entry_price <= 0:
+            continue
+        exit_map[trade_id] = {
+            "entry_price": entry_price,
+            "exit_bid": exit_bid,
+            "shares": shares or 0.0,
+            "max_sell_shares": max_sell_shares or 0.0,
+            "covers": covers,
+        }
+    return exit_map
+
+
+def simulate_user_runs(
+    trades: pd.DataFrame,
+    exit_map: dict[str, dict[str, float | bool]],
+    variant: str,
+    start_capital: float,
+    target_capital: float,
+) -> tuple[float, list[dict[str, object]]]:
+    runs: list[dict[str, float | str]] = []
+    for _, trade in trades.iterrows():
+        ready = [run for run in runs if run["status"] == "ready"]
+        if ready:
+            run = ready[0]
+        else:
+            run = {
+                "run": len(runs) + 1,
+                "status": "ready",
+                "capital": start_capital,
+                "target_capital": target_capital,
+                "bets": 0,
+                "wins": 0,
+                "losses": 0,
+            }
+            runs.append(run)
+        stake = float(run["capital"])
+        run["bets"] = int(run["bets"]) + 1
+        capital_after = user_run_trade_capital_after(stake, trade, exit_map, variant)
+        if capital_after <= 0:
+            run["capital"] = 0.0
+            run["status"] = "busted"
+            run["losses"] = int(run["losses"]) + 1
+        elif capital_after >= target_capital:
+            run["capital"] = round(capital_after, 4)
+            run["status"] = "completed"
+            run["wins"] = int(run["wins"]) + 1
+        else:
+            run["capital"] = round(capital_after, 4)
+            run["wins"] = int(run["wins"]) + 1
+    total_capital = sum(float(run["capital"]) for run in runs if run["status"] != "busted")
+    rows = [
+        {
+            "run": int(run["run"]),
+            "status": str(run["status"]),
+            "bets": int(run["bets"]),
+            "wins": int(run["wins"]),
+            "losses": int(run["losses"]),
+            "capital": round(float(run["capital"]), 4),
+            "target_capital": round(target_capital, 4),
+        }
+        for run in runs
+    ]
+    return round(total_capital - (len(runs) * start_capital), 4), rows
+
+
+def user_run_trade_capital_after(
+    stake: float,
+    trade: pd.Series,
+    exit_map: dict[str, dict[str, float | bool]],
+    variant: str,
+) -> float:
+    entry_price = float(trade["_entry_price"])
+    trade_id = str(trade.get("trade_id", ""))
+    exit_row = exit_map.get(trade_id)
+    final_win = float(trade["_pnl"]) > 0
+    if variant == "full" and exit_row:
+        return stake * float(exit_row["exit_bid"]) / entry_price
+    if variant == "half" and exit_row:
+        sold = 0.5 * stake * float(exit_row["exit_bid"]) / entry_price
+        held = 0.5 * stake / entry_price if final_win else 0.0
+        return sold + held
+    if variant == "liquidity" and exit_row:
+        shares = float(exit_row.get("shares") or 0.0)
+        max_sell_shares = float(exit_row.get("max_sell_shares") or 0.0)
+        if bool(exit_row.get("covers")):
+            sold_ratio = 1.0
+        elif shares > 0 and max_sell_shares > 0:
+            sold_ratio = min(max_sell_shares / shares, 1.0)
+        else:
+            sold_ratio = 0.0
+        if sold_ratio > 0:
+            sold = sold_ratio * stake * float(exit_row["exit_bid"]) / entry_price
+            held = (1.0 - sold_ratio) * stake / entry_price if final_win else 0.0
+            return sold + held
+    if final_win:
+        return stake / entry_price
+    return 0.0
+
+
+def summarize_execution_log(execution_log: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
+    empty = {
+        "mode": SETTINGS.get("execution", {}).get("mode", "dry_run"),
+        "orders": 0,
+        "buy_orders": 0,
+        "sell_orders": 0,
+        "filled": 0,
+        "skipped": 0,
+        "partial": 0,
+        "filled_notional_usd": 0.0,
+    }
+    if execution_log.empty:
+        return empty, pd.DataFrame()
+    rows = execution_log.copy()
+    status = rows.get("status", pd.Series(dtype=str)).astype(str)
+    action = rows.get("action", pd.Series(dtype=str)).astype(str)
+    notional = pd.to_numeric(rows.get("notional_usd", ""), errors="coerce").fillna(0.0)
+    summary = {
+        "mode": SETTINGS.get("execution", {}).get("mode", "dry_run"),
+        "orders": int(len(rows)),
+        "buy_orders": int((action == "BUY").sum()),
+        "sell_orders": int((action == "SELL").sum()),
+        "filled": int((status == "filled").sum()),
+        "skipped": int(status.str.startswith("skipped", na=False).sum()),
+        "partial": int((status == "partial_fill").sum()),
+        "filled_notional_usd": round(float(notional[status == "filled"].sum()), 4),
+    }
+    return summary, rows
+
+
 def summarize_under_buffer_exit_scenario(exits: pd.DataFrame, trades: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
     empty_summary = {
         "triggered": 0,
         "hold_pnl_usd": 0.0,
         "exit_rule_pnl_usd": 0.0,
+        "exit_50_pnl_usd": 0.0,
+        "exit_liquidity_pnl_usd": 0.0,
         "delta_pnl_usd": 0.0,
+        "delta_50_pnl_usd": 0.0,
+        "delta_liquidity_pnl_usd": 0.0,
     }
     if exits.empty:
         return empty_summary, pd.DataFrame()
@@ -1117,18 +1369,67 @@ def summarize_under_buffer_exit_scenario(exits: pd.DataFrame, trades: pd.DataFra
 
     frame["hold_pnl_usd"] = pd.to_numeric(frame.get("hold_pnl_usd", pd.Series(dtype=float)), errors="coerce")
     frame["delta_pnl_usd"] = frame["exit_pnl_usd"] - frame["hold_pnl_usd"].fillna(0.0)
+    frame["exit_50_pnl_usd"] = ((frame["exit_pnl_usd"] * 0.5) + (frame["hold_pnl_usd"].fillna(0.0) * 0.5)).round(4)
+    frame["delta_50_pnl_usd"] = frame["exit_50_pnl_usd"] - frame["hold_pnl_usd"].fillna(0.0)
+    frame["shares"] = pd.to_numeric(frame.get("shares", pd.Series(dtype=float)), errors="coerce")
+    frame["exit_max_sell_shares_at_bid"] = pd.to_numeric(frame.get("exit_max_sell_shares_at_bid", pd.Series(dtype=float)), errors="coerce")
+    sell_ratio = (frame["exit_max_sell_shares_at_bid"] / frame["shares"]).clip(lower=0, upper=1)
+    frame["exit_liquidity_pnl_usd"] = ((frame["exit_pnl_usd"] * sell_ratio) + (frame["hold_pnl_usd"].fillna(0.0) * (1 - sell_ratio))).round(4)
+    frame.loc[sell_ratio.isna(), "exit_liquidity_pnl_usd"] = pd.NA
+    frame["delta_liquidity_pnl_usd"] = frame["exit_liquidity_pnl_usd"] - frame["hold_pnl_usd"]
     resolved = frame[frame["hold_pnl_usd"].notna()]
+    liquidity_resolved = resolved[resolved["exit_liquidity_pnl_usd"].notna()]
     summary = {
         "triggered": int(len(frame)),
         "resolved_compared": int(len(resolved)),
         "hold_pnl_usd": round(float(resolved["hold_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
         "exit_rule_pnl_usd": round(float(resolved["exit_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
+        "exit_50_pnl_usd": round(float(resolved["exit_50_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
+        "liquidity_compared": int(len(liquidity_resolved)),
+        "exit_liquidity_pnl_usd": round(float(liquidity_resolved["exit_liquidity_pnl_usd"].sum()), 4) if not liquidity_resolved.empty else 0.0,
         "delta_pnl_usd": round(float(resolved["delta_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
+        "delta_50_pnl_usd": round(float(resolved["delta_50_pnl_usd"].sum()), 4) if not resolved.empty else 0.0,
+        "delta_liquidity_pnl_usd": round(float(liquidity_resolved["delta_liquidity_pnl_usd"].sum()), 4) if not liquidity_resolved.empty else 0.0,
     }
-    for column in ["exit_bid", "entry_price", "elapsed", "total_goal_buffer", "hold_pnl_usd", "exit_pnl_usd", "delta_pnl_usd"]:
+    for column in [
+        "exit_bid",
+        "entry_price",
+        "elapsed",
+        "total_goal_buffer",
+        "hold_pnl_usd",
+        "exit_pnl_usd",
+        "exit_50_pnl_usd",
+        "exit_liquidity_pnl_usd",
+        "delta_pnl_usd",
+        "delta_50_pnl_usd",
+        "delta_liquidity_pnl_usd",
+        "exit_max_sell_usd_at_bid",
+    ]:
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce").round(4)
     return summary, frame
+
+
+def summarize_goal_cooldown_research(rows: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
+    if rows.empty:
+        return {
+            "cooldown_minutes": int(SETTINGS.get("parallel_research", {}).get("goal_cooldown_minutes", 5)),
+            "blocked_trades": 0,
+            "blocked_pnl_usd": 0.0,
+            "pnl_without_blocked_usd": "",
+        }, pd.DataFrame()
+    frame = rows.copy()
+    frame["pnl_usd"] = pd.to_numeric(frame.get("pnl_usd", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+    blocked = frame[frame.get("blocked_by_goal_cooldown", False).astype(str).str.lower().isin(["true", "1"])] if "blocked_by_goal_cooldown" in frame else pd.DataFrame()
+    total_pnl = float(frame["pnl_usd"].sum())
+    blocked_pnl = float(blocked["pnl_usd"].sum()) if not blocked.empty else 0.0
+    return {
+        "cooldown_minutes": int(SETTINGS.get("parallel_research", {}).get("goal_cooldown_minutes", 5)),
+        "total_under_trades": int(len(frame)),
+        "blocked_trades": int(len(blocked)),
+        "blocked_pnl_usd": round(blocked_pnl, 4),
+        "pnl_without_blocked_usd": round(total_pnl - blocked_pnl, 4),
+    }, blocked
 
 
 def summarize_process_focus(processes: pd.DataFrame, *, start_balance: float) -> tuple[dict[str, object], list[dict[str, object]]]:

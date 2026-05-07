@@ -14,6 +14,7 @@ from app.discovery.gamma_client import GammaClient
 from app.discovery.cache import DiscoveryCache
 from app.discovery.expand import expand_events_to_all_markets
 from app.discovery.related import fetch_related_live_events
+from app.execution.simulator import DryRunExecutor
 from app.live_state.cache import LiveStateCache
 from app.live_state.football_research import FootballResearchStore
 from app.live_state.matcher import LiveStateMatcher
@@ -24,11 +25,13 @@ from app.paper_trader.exit_rules import under_buffer_exit_candidates
 from app.paper_trader.trader import PaperTrader
 from app.risk.limits import RiskManager
 from app.storage.store import Store
+from app.storage.execution_log import ExecutionLogStore
 from app.storage.under_buffer_exits import UnderBufferExitStore
 from app.storage.tracked_matches import TrackedMatches, merge_tracked_events
 from app.storage.trades import load_trades
 from app.strategy.date_guard import market_date_is_current_or_unknown
 from app.strategy.hold_confirm import HoldConfirmation
+from app.strategy.no_draw_hold import NoDrawScoreHold, is_no_draw_no, parse_wait_tiers
 from app.strategy.engine import StrategyEngine
 from app.strategy.goal_totals_under_runtime import GoalTotalsUnderRuntime
 from app.strategy.proof_of_winning_runtime import ProofOfWinningRuntime
@@ -87,9 +90,16 @@ def main() -> None:
     )
     trader = PaperTrader(settings, RiskManager(settings))
     under_exit_store = UnderBufferExitStore(resolve_path(settings["storage"]["under_buffer_exit_csv"]))
+    execution_store = ExecutionLogStore(resolve_path(settings["storage"]["execution_log_csv"]))
+    executor = DryRunExecutor(settings, clob_client)
     hold = HoldConfirmation(
         resolve_path(settings["storage"]["hold_state_json"]),
         float(settings["strategy"].get("min_price_hold_seconds", 5)),
+    )
+    no_draw_hold = NoDrawScoreHold(
+        resolve_path(settings["storage"]["no_draw_hold_state_json"]),
+        float(settings.get("no_draw", {}).get("score_stability_wait_seconds", 300)),
+        wait_tiers=parse_wait_tiers(settings.get("no_draw", {}).get("score_stability_wait_tiers")),
     )
     interval = int(settings["scanner"].get("interval_seconds", 5))
     full_every = max(1, int(settings["scanner"].get("full_discovery_every_cycles", 12)))
@@ -140,6 +150,7 @@ def main() -> None:
             open_and_history = load_trades(resolve_path(settings["storage"]["trade_csv"]))
             observations = []
             entries = []
+            execution_rows = []
             latest_by_token = {}
             eligible = 0
             for market in markets:
@@ -191,6 +202,15 @@ def main() -> None:
                                 eligible_for_trade=totals_under.enter,
                                 reason=totals_under.reason,
                             )
+                    if decision.eligible_for_trade and is_no_draw_no(decision.observation):
+                        no_draw_confirmed, no_draw_reason = no_draw_hold.check(decision.observation)
+                        decision.observation.reason = f"{decision.reason}_{no_draw_reason}"
+                        if not no_draw_confirmed:
+                            decision = type(decision)(
+                                observation=decision.observation,
+                                eligible_for_trade=False,
+                                reason=decision.observation.reason,
+                            )
                     observations.append(decision.observation)
                     latest_by_token[decision.observation.token_id] = decision.observation.price
                     if decision.eligible_for_trade:
@@ -221,11 +241,25 @@ def main() -> None:
                             max_stake_usd_at_entry=max_stake_usd_at_entry,
                         )
                         if entry:
+                            execution = executor.simulate_entry(entry, decision.observation)
+                            execution_rows.append(execution)
+                            if executor.gate_entries and execution.status != "filled":
+                                decision.observation.reason = f"{decision.observation.reason}_execution_{execution.status}"
+                                latest_by_token[decision.observation.token_id] = decision.observation.price
+                                continue
                             entries.append(entry)
             hold.save()
+            no_draw_hold.save()
             trader.bind_entries(entries)
             updates = trader.update_open_trades(open_and_history + entries, latest_by_token)
-            under_exit_store.upsert_exits(under_buffer_exit_candidates(open_and_history + entries, observations, settings))
+            under_exits = hydrate_exit_liquidity(
+                under_buffer_exit_candidates(open_and_history + entries, observations, settings),
+                clob_client,
+            )
+            for under_exit in under_exits:
+                execution_rows.append(executor.simulate_under_buffer_exit(under_exit))
+            under_exit_store.upsert_exits(under_exits)
+            execution_store.upsert(execution_rows)
             store.append_snapshots(observations)
             store.upsert_trades(entries + updates)
             logger.info(
@@ -255,6 +289,17 @@ def fresh_clob_buy_price(clob_client: ClobClient, token_id: str) -> float | None
     if not isinstance(payload, dict):
         return None
     return to_float(payload.get("price"))
+
+
+def hydrate_exit_liquidity(exits: list, clob_client: ClobClient) -> list:
+    for exit_row in exits:
+        liquidity = clob_client.max_sell_at_price(exit_row.token_id, exit_row.exit_bid)
+        if not liquidity:
+            continue
+        exit_row.exit_max_sell_shares_at_bid = liquidity["shares"]
+        exit_row.exit_max_sell_usd_at_bid = liquidity["usd"]
+        exit_row.exit_liquidity_covers_trade = liquidity["shares"] >= exit_row.shares
+    return exits
 
 
 def to_float(value: object) -> float | None:

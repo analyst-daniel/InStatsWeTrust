@@ -8,31 +8,25 @@
 </head>
 <body>
   <header>
-    <div>
+    <div class="header-main">
       <h1>&gt; Polymarket Scanner</h1>
       <p id="updated">Waiting for data...</p>
+      <div class="header-overview">
+        <div>
+          <h2>Capital</h2>
+          <div id="capital_menu_summary" class="summary-group compact"></div>
+        </div>
+      </div>
+    </div>
+    <div class="header-process">
+      <h2>Runs</h2>
+      <div id="process_menu_summary" class="summary-group compact"></div>
+      <div id="process_run_cards" class="process-grid"></div>
     </div>
     <div class="status" id="status"></div>
   </header>
 
   <main>
-    <section>
-      <h2>Paper Trading Summary</h2>
-      <div id="trade_summary" class="summary-grid"></div>
-    </section>
-
-    <section>
-      <h2>Under Buffer Exit Scenario</h2>
-      <div id="under_buffer_exit_summary" class="summary-grid"></div>
-      <div id="under_buffer_exit_rows" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Active Processes Above 10 Units</h2>
-      <div id="process_focus_summary" class="summary-grid"></div>
-      <div id="process_focus_rows" class="table"></div>
-    </section>
-
     <section>
       <h2>Open Paper Trades</h2>
       <div id="open_trades" class="table"></div>
@@ -59,108 +53,37 @@
     </section>
 
     <section>
-      <h2>Capital Processes</h2>
-      <div id="capital_process_summary" class="summary-grid"></div>
-      <div id="capital_process_rows" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Diagnostic Funnel</h2>
-      <div id="diagnostic_funnel_summary" class="summary-grid"></div>
-      <div id="diagnostic_funnel_rows" class="table"></div>
-    </section>
-
-    <section>
-      <h2>PnL Attribution</h2>
-      <div id="pnl_attribution" class="summary-grid"></div>
-      <div id="pnl_attribution_strategy" class="table"></div>
-      <div id="pnl_attribution_subtype" class="table"></div>
-      <div id="pnl_attribution_league" class="table"></div>
-      <div id="pnl_attribution_entry_bucket" class="table"></div>
-      <div id="pnl_attribution_price_bucket" class="table"></div>
-      <div id="pnl_attribution_goal_buffer" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Started By Polymarket Time, Not Confirmed By Sports API</h2>
-      <div id="unconfirmed_started" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Unmatched / Diagnostic</h2>
-      <div id="unmatched_diagnostic" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Current Live Strategy Candidates</h2>
-      <div id="candidates" class="table"></div>
-    </section>
-
-    <section>
-      <h2>No-Play Diagnostics</h2>
-      <div id="no_play_summary" class="table"></div>
-      <div id="no_play_rejections" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Missing Fixture ID Diagnostics</h2>
-      <div id="missing_fixture_summary" class="summary-grid"></div>
-      <div id="missing_fixture_rows" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Missing Detail History Diagnostics</h2>
-      <div id="missing_detail_history_summary" class="summary-grid"></div>
-      <div id="missing_detail_history_rows" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Proof Of Winning Debug</h2>
-      <div id="proof_debug" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Spread Confirmation Debug</h2>
-      <div id="spread_debug" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Goal Totals Under Debug</h2>
-      <div id="goal_totals_under_debug" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Goal Totals Under Calibration</h2>
-      <div id="goal_totals_under_calibration" class="summary-grid"></div>
-      <div id="goal_totals_under_calibration_line" class="table"></div>
-      <div id="goal_totals_under_calibration_entry_bucket" class="table"></div>
-      <div id="goal_totals_under_calibration_league" class="table"></div>
-      <div id="goal_totals_under_calibration_reason" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Spread Confirmation Calibration</h2>
-      <div id="spread_calibration" class="summary-grid"></div>
-      <div id="spread_calibration_line" class="table"></div>
-      <div id="spread_calibration_side_type" class="table"></div>
-      <div id="spread_calibration_entry_bucket" class="table"></div>
-      <div id="spread_calibration_league" class="table"></div>
-    </section>
-
-    <section>
-      <h2>Proof Of Winning Calibration</h2>
-      <div id="proof_calibration" class="summary-grid"></div>
-      <div id="proof_calibration_market_type" class="table"></div>
-      <div id="proof_calibration_entry_bucket" class="table"></div>
-      <div id="proof_calibration_league" class="table"></div>
-    </section>
-
-    <section>
       <h2>Resolved Paper Trades</h2>
       <div id="resolved_trades" class="table"></div>
     </section>
+
+    <div hidden>
+      <div id="execution_summary"></div><div id="execution_rows"></div>
+      <div id="under_buffer_exit_summary"></div><div id="under_buffer_exit_rows"></div>
+      <div id="goal_cooldown_summary"></div><div id="goal_cooldown_rows"></div>
+      <div id="process_focus_summary"></div><div id="process_focus_rows"></div>
+      <div id="capital_process_summary"></div>
+      <div id="diagnostic_funnel_summary"></div><div id="diagnostic_funnel_rows"></div>
+      <div id="pnl_attribution"></div>
+      <div id="pnl_attribution_strategy"></div><div id="pnl_attribution_subtype"></div>
+      <div id="pnl_attribution_league"></div><div id="pnl_attribution_entry_bucket"></div>
+      <div id="pnl_attribution_price_bucket"></div><div id="pnl_attribution_goal_buffer"></div>
+      <div id="unconfirmed_started"></div><div id="unmatched_diagnostic"></div>
+      <div id="candidates"></div><div id="no_play_summary"></div><div id="no_play_rejections"></div>
+      <div id="missing_fixture_summary"></div><div id="missing_fixture_rows"></div>
+      <div id="missing_detail_history_summary"></div><div id="missing_detail_history_rows"></div>
+      <div id="proof_debug"></div><div id="spread_debug"></div><div id="goal_totals_under_debug"></div>
+      <div id="goal_totals_under_calibration"></div><div id="goal_totals_under_calibration_line"></div>
+      <div id="goal_totals_under_calibration_entry_bucket"></div><div id="goal_totals_under_calibration_league"></div>
+      <div id="goal_totals_under_calibration_reason"></div>
+      <div id="spread_calibration"></div><div id="spread_calibration_line"></div>
+      <div id="spread_calibration_side_type"></div><div id="spread_calibration_entry_bucket"></div>
+      <div id="spread_calibration_league"></div>
+      <div id="proof_calibration"></div><div id="proof_calibration_market_type"></div>
+      <div id="proof_calibration_entry_bucket"></div><div id="proof_calibration_league"></div>
+    </div>
   </main>
 
-  <script src="/app.js?v=20260505-1"></script>
+  <script src="/app.js?v=20260507-main-13"></script>
 </body>
 </html>

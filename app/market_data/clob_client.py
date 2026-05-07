@@ -17,13 +17,21 @@ class ClobClient:
         return self._get("/book", {"token_id": token_id})
 
     def max_stake_at_price(self, token_id: str, price: float, *, tolerance: float = 1e-9) -> float | None:
+        liquidity = self.liquidity_at_price(token_id, price, side="BUY", tolerance=tolerance)
+        return liquidity["usd"] if liquidity else None
+
+    def max_sell_at_price(self, token_id: str, price: float, *, tolerance: float = 1e-9) -> dict[str, float] | None:
+        return self.liquidity_at_price(token_id, price, side="SELL", tolerance=tolerance)
+
+    def liquidity_at_price(self, token_id: str, price: float, *, side: str, tolerance: float = 1e-9) -> dict[str, float] | None:
         try:
             book = self.get_book(token_id)
         except Exception:
             return None
-        asks = book.get("asks", []) if isinstance(book, dict) else []
+        levels_key = "asks" if side.upper() == "BUY" else "bids"
+        levels = book.get(levels_key, []) if isinstance(book, dict) else []
         total_shares = 0.0
-        for level in asks:
+        for level in levels:
             if not isinstance(level, dict):
                 continue
             level_price = to_float(level.get("price"))
@@ -34,7 +42,7 @@ class ClobClient:
                 total_shares += level_size
         if total_shares <= 0:
             return None
-        return round(total_shares * price, 4)
+        return {"shares": round(total_shares, 8), "usd": round(total_shares * price, 4)}
 
     def get_price(self, token_id: str, side: str = "BUY") -> dict[str, Any]:
         return self._get("/price", {"token_id": token_id, "side": side})

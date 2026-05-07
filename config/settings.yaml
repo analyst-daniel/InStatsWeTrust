@@ -63,6 +63,27 @@ under_buffer_exit:
   max_elapsed: 85
   min_bid_to_entry_ratio: 0.95
 
+execution:
+  mode: "dry_run"
+  gate_entries: true
+  require_full_fill: true
+
+no_draw:
+  score_stability_wait_seconds: 0
+  score_stability_wait_tiers:
+    - min_elapsed: 70
+      max_elapsed: 75
+      wait_seconds: 180
+    - min_elapsed: 75
+      max_elapsed: 80
+      wait_seconds: 120
+    - min_elapsed: 80
+      max_elapsed: 85
+      wait_seconds: 60
+    - min_elapsed: 85
+      max_elapsed: 89
+      wait_seconds: 60
+
 risk:
   max_daily_paper_trades: 1000000
   max_simultaneous_open_trades: 1000000
@@ -92,6 +113,12 @@ storage:
   capital_processes_json: "data/snapshots/capital_processes.json"
   capital_high_watermark_json: "data/snapshots/capital_high_watermark.json"
   under_buffer_exit_csv: "data/snapshots/under_buffer_exit_log.csv"
+  goal_cooldown_research_csv: "data/snapshots/goal_cooldown_research.csv"
+  execution_log_csv: "data/snapshots/execution_log.csv"
+  no_draw_hold_state_json: "data/snapshots/no_draw_hold_state.json"
+
+parallel_research:
+  goal_cooldown_minutes: 5
 
 scanner:
   interval_seconds: 5
