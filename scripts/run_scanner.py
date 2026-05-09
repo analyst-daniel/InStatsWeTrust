@@ -214,7 +214,7 @@ def main() -> None:
                     observations.append(decision.observation)
                     latest_by_token[decision.observation.token_id] = decision.observation.price
                     if decision.eligible_for_trade:
-                        fresh_price = fresh_clob_buy_price(clob_client, decision.observation.token_id)
+                        fresh_price = fresh_clob_entry_price(clob_client, decision.observation.token_id)
                         if fresh_price is not None:
                             decision.observation.price = fresh_price
                             decision.observation.ask = fresh_price
@@ -281,9 +281,12 @@ def main() -> None:
         time.sleep(interval)
 
 
-def fresh_clob_buy_price(clob_client: ClobClient, token_id: str) -> float | None:
+def fresh_clob_entry_price(clob_client: ClobClient, token_id: str) -> float | None:
     try:
-        payload = clob_client.get_price(token_id, side="BUY")
+        # Polymarket's price endpoint returns the best bid for side=BUY and the
+        # best ask for side=SELL. For an entry BUY we need the ask: the price
+        # at which available sell-side liquidity can fill immediately.
+        payload = clob_client.get_price(token_id, side="SELL")
     except Exception:
         return None
     if not isinstance(payload, dict):

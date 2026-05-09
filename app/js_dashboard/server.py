@@ -40,6 +40,10 @@ SETTINGS = load_settings()
 
 def read_table(name: str) -> pd.DataFrame:
     db_path = resolve_path(SETTINGS["storage"]["sqlite_path"])
+    return read_sqlite_table(db_path, name)
+
+
+def read_sqlite_table(db_path: Path, name: str) -> pd.DataFrame:
     if not db_path.exists():
         return pd.DataFrame()
     with sqlite3.connect(db_path) as conn:
@@ -68,6 +72,25 @@ def read_csv(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def nested_value(payload: dict, keys: list[str], default: object = "") -> object:
+    current: object = payload
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return current
+
+
 def compact_rows(df: pd.DataFrame, columns: list[str], limit: int = 50) -> list[dict]:
     if df.empty:
         return []
@@ -82,6 +105,98 @@ def sort_if_present(df: pd.DataFrame, column: str, *, ascending: bool = False) -
     if df.empty or column not in df.columns:
         return df
     return df.sort_values(column, ascending=ascending)
+
+
+def prepare_trade_view(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if trades.empty or "status" not in trades:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    open_trades = trades[trades["status"].astype(str) == "open"].copy()
+    stale_open_trades = pd.DataFrame()
+    if not open_trades.empty:
+        entry_ts = pd.to_datetime(open_trades["entry_timestamp"], utc=True, errors="coerce")
+        is_today = entry_ts.dt.strftime("%Y-%m-%d") == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        stale_open_trades = open_trades[~is_today].copy()
+        if SETTINGS.get("dashboard", {}).get("show_only_today_open_trades", True):
+            open_trades = open_trades[is_today].copy()
+        for frame in (open_trades, stale_open_trades):
+            enrich_trade_rows(frame)
+
+    resolved = trades[trades["status"].astype(str) == "resolved"].copy()
+    if not resolved.empty:
+        enrich_trade_rows(resolved)
+        resolved["win"] = pd.to_numeric(resolved.get("pnl_usd", ""), errors="coerce").map(lambda value: "WIN" if value > 0 else "")
+        resolved["loss"] = pd.to_numeric(resolved.get("pnl_usd", ""), errors="coerce").map(lambda value: "LOSS" if value < 0 else "")
+    return open_trades, stale_open_trades, resolved
+
+
+def mark_sold_trades(resolved: pd.DataFrame, exits: pd.DataFrame) -> None:
+    if resolved.empty:
+        return
+    resolved["sold"] = ""
+    if exits.empty or "trade_id" not in exits.columns or "trade_id" not in resolved.columns:
+        return
+    sold_ids = set(exits["trade_id"].dropna().astype(str))
+    if not sold_ids:
+        return
+    resolved.loc[resolved["trade_id"].astype(str).isin(sold_ids), "sold"] = "SOLD"
+
+
+def build_execution_sell_exit_rows(execution_log: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
+    if execution_log.empty or trades.empty or "trade_id" not in execution_log.columns or "trade_id" not in trades.columns:
+        return pd.DataFrame()
+    action = execution_log.get("action", pd.Series(dtype=str)).astype(str).str.upper()
+    status = execution_log.get("status", pd.Series(dtype=str)).astype(str)
+    sells = execution_log[action.eq("SELL") & status.isin(["filled", "partial_fill"])].copy()
+    if sells.empty:
+        return pd.DataFrame()
+
+    trade_cols = ["trade_id", "entry_price", "stake_usd", "shares"]
+    if "pnl_usd" in trades.columns:
+        trade_cols.append("pnl_usd")
+    sells = sells.merge(trades[trade_cols], on="trade_id", how="left", suffixes=("", "_trade"))
+    sell_price = pd.to_numeric(sells.get("avg_fill_price", ""), errors="coerce")
+    sell_price = sell_price.fillna(pd.to_numeric(sells.get("limit_price", ""), errors="coerce"))
+    sell_price = sell_price.fillna(pd.to_numeric(sells.get("best_bid", ""), errors="coerce"))
+    entry_price = pd.to_numeric(sells.get("entry_price", ""), errors="coerce")
+    filled_shares = pd.to_numeric(sells.get("filled_shares", ""), errors="coerce").fillna(0.0)
+    trade_shares = pd.to_numeric(sells.get("shares", ""), errors="coerce").fillna(filled_shares)
+    sells["entry_price"] = entry_price
+    sells["exit_bid"] = sell_price
+    sells["shares"] = trade_shares
+    sells["stake_usd"] = pd.to_numeric(sells.get("stake_usd", ""), errors="coerce")
+    sells["exit_pnl_usd"] = ((sell_price - entry_price) * filled_shares).round(4)
+    sells["exit_max_sell_shares_at_bid"] = filled_shares
+    sells["exit_max_sell_usd_at_bid"] = (sell_price * filled_shares).round(4)
+    sells["exit_liquidity_covers_trade"] = filled_shares.ge(trade_shares * 0.999)
+    sells["timestamp_utc"] = sells.get("timestamp_utc", "")
+    sells["reason"] = sells.get("reason", "execution_sell")
+    return sells[
+        [
+            "trade_id",
+            "timestamp_utc",
+            "event_title",
+            "market_id",
+            "question",
+            "token_id",
+            "entry_price",
+            "stake_usd",
+            "shares",
+            "exit_bid",
+            "exit_pnl_usd",
+            "reason",
+            "exit_max_sell_shares_at_bid",
+            "exit_max_sell_usd_at_bid",
+            "exit_liquidity_covers_trade",
+        ]
+    ].dropna(subset=["trade_id", "entry_price", "exit_bid"])
+
+
+def enrich_trade_rows(frame: pd.DataFrame) -> None:
+    if frame.empty:
+        return
+    frame["bet_label"] = frame.apply(lambda row: build_bet_label(str(row.get("question", "")), str(row.get("side", ""))), axis=1)
+    frame["entry_minute"] = pd.to_numeric(frame.get("elapsed", ""), errors="coerce").round(1)
+    frame["entry_score"] = frame.get("score", "")
 
 
 def summarize_no_play_rejections(df: pd.DataFrame) -> pd.DataFrame:
@@ -513,9 +628,14 @@ def dashboard_state() -> dict:
     raw_snapshots = read_table("snapshots")
     snapshots = filter_snapshots(SETTINGS, raw_snapshots)
     trades = read_table("trades")
+    nautilus_db = ROOT.parent / "nautilus_poly_bot" / "data" / "db" / "nautilus_poly_bot.sqlite"
+    nautilus_trades = read_sqlite_table(nautilus_db, "trades")
     under_buffer_exits = read_csv(resolve_path(SETTINGS["storage"].get("under_buffer_exit_csv", "data/snapshots/under_buffer_exit_log.csv")))
     goal_cooldown_research = read_csv(resolve_path(SETTINGS["storage"].get("goal_cooldown_research_csv", "data/snapshots/goal_cooldown_research.csv")))
     execution_log = read_csv(resolve_path(SETTINGS["storage"].get("execution_log_csv", "data/snapshots/execution_log.csv")))
+    nautilus_execution_log = read_csv(ROOT.parent / "nautilus_poly_bot" / "data" / "snapshots" / "execution_log.csv")
+    nautilus_exits = build_execution_sell_exit_rows(nautilus_execution_log, nautilus_trades)
+    market_data_stats = read_json(ROOT.parent / "nautilus_poly_bot" / "data" / "snapshots" / "market_data_stats.json")
     events = load_discovery_events(SETTINGS)
     matches = build_match_overview(SETTINGS, events, snapshots) if events else pd.DataFrame()
     normalized_markets = normalize_events(events) if events else []
@@ -564,20 +684,10 @@ def dashboard_state() -> dict:
             live_mask = matches["live"] == True
             matches = matches[(~live_mask) | (matches["confirmed_by_sports_api"] == True)]
 
-    all_open_trades = trades[trades["status"] == "open"].copy() if not trades.empty and "status" in trades else pd.DataFrame()
-    stale_open_trades = pd.DataFrame()
-    open_trades = all_open_trades.copy()
-    if not all_open_trades.empty:
-        entry_ts = pd.to_datetime(all_open_trades["entry_timestamp"], utc=True, errors="coerce")
-        is_today = entry_ts.dt.strftime("%Y-%m-%d") == datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        stale_open_trades = all_open_trades[~is_today].copy()
-        if SETTINGS.get("dashboard", {}).get("show_only_today_open_trades", True):
-            open_trades = all_open_trades[is_today].copy()
-        for frame in (open_trades, stale_open_trades):
-            if not frame.empty:
-                frame["bet_label"] = frame.apply(lambda row: build_bet_label(str(row.get("question", "")), str(row.get("side", ""))), axis=1)
-                frame["entry_minute"] = pd.to_numeric(frame.get("elapsed", ""), errors="coerce").round(1)
-                frame["entry_score"] = frame.get("score", "")
+    open_trades, stale_open_trades, legacy_resolved = prepare_trade_view(trades)
+    nautilus_open_trades, nautilus_stale_open_trades, nautilus_resolved = prepare_trade_view(nautilus_trades)
+    mark_sold_trades(legacy_resolved, under_buffer_exits)
+    mark_sold_trades(nautilus_resolved, nautilus_exits)
 
     live75 = pd.DataFrame()
     started = pd.DataFrame()
@@ -671,14 +781,7 @@ def dashboard_state() -> dict:
             )
             no_play_summary = summarize_no_play_rejections(no_play_rows)
 
-    resolved = trades[trades["status"].astype(str) == "resolved"] if not trades.empty and "status" in trades else pd.DataFrame()
-    if not resolved.empty:
-        resolved = resolved.copy()
-        resolved["bet_label"] = resolved.apply(lambda row: build_bet_label(str(row.get("question", "")), str(row.get("side", ""))), axis=1)
-        resolved["entry_minute"] = pd.to_numeric(resolved.get("elapsed", ""), errors="coerce").round(1)
-        resolved["entry_score"] = resolved.get("score", "")
-        resolved["win"] = pd.to_numeric(resolved.get("pnl_usd", ""), errors="coerce").map(lambda value: "WIN" if value > 0 else "")
-        resolved["loss"] = pd.to_numeric(resolved.get("pnl_usd", ""), errors="coerce").map(lambda value: "LOSS" if value < 0 else "")
+    resolved = legacy_resolved
     capital_summary, capital_rows = capital_processes.summary(load_trades(resolve_path(SETTINGS["storage"]["trade_csv"])))
     capital_start_balance = float(SETTINGS.get("capital_processes", {}).get("start_balance", 10.0))
     capital_usage = summarize_capital_usage(pd.DataFrame(capital_rows), start_balance=capital_start_balance)
@@ -688,9 +791,14 @@ def dashboard_state() -> dict:
         yesterday_capital_usage,
     )
     trade_summary = summarize_trades(trades) | capital_usage | yesterday_capital_usage | capital_record
+    nautilus_trade_summary = summarize_trades(nautilus_trades)
     under_buffer_exit_summary, under_buffer_exit_rows = summarize_under_buffer_exit_scenario(under_buffer_exits, trades)
+    nautilus_exit_summary, _ = summarize_under_buffer_exit_scenario(nautilus_exits, nautilus_trades)
     run_method_summary = summarize_user_run_method(trades, under_buffer_exits)
+    nautilus_run_method_summary = summarize_user_run_method(nautilus_trades, nautilus_exits)
     execution_summary, execution_rows = summarize_execution_log(execution_log)
+    apply_sold_summary(trade_summary, under_buffer_exit_summary)
+    apply_sold_summary(nautilus_trade_summary, nautilus_exit_summary)
     trade_summary["pnl_v2_usd"] = round(
         float(trade_summary.get("pnl_usd", 0.0) or 0.0) + float(under_buffer_exit_summary.get("delta_pnl_usd", 0.0) or 0.0),
         4,
@@ -866,9 +974,23 @@ def dashboard_state() -> dict:
             "yday_min_capital": yesterday_capital_usage["yday_min_capital"],
             "capital_record": capital_record["capital_record"],
             "capital_record_date": capital_record["capital_record_date"],
+            "ws_tokens": nested_value(market_data_stats, ["book_cache", "subscribed"], 0),
+            "ws_books": nested_value(market_data_stats, ["book_cache", "books"], 0),
+            "ws_price_hits": market_data_stats.get("ws_price_hits", 0),
+            "http_price_fallbacks": market_data_stats.get("http_price_fallbacks", 0),
+            "ws_book_hits": market_data_stats.get("ws_book_hits", 0),
+            "http_book_fallbacks": market_data_stats.get("http_book_fallbacks", 0),
+            "pre_subscribed_tokens": market_data_stats.get("pre_subscribed_tokens", 0),
+            "nautilus_open_trades": nautilus_trade_summary.get("open_trades", 0),
+            "nautilus_resolved": nautilus_trade_summary.get("resolved_trades", 0),
+            "nautilus_wins": nautilus_trade_summary.get("wins", 0),
+            "nautilus_losses": nautilus_trade_summary.get("losses", 0),
         },
+        "market_data_summary": market_data_stats,
         "trade_summary": trade_summary,
+        "nautilus_trade_summary": nautilus_trade_summary,
         "run_method_summary": run_method_summary,
+        "nautilus_run_method_summary": nautilus_run_method_summary,
         "user_run_rows": run_method_summary.get("full_exit_runs", []),
         "under_buffer_exit_summary": under_buffer_exit_summary,
         "execution_summary": execution_summary,
@@ -928,6 +1050,8 @@ def dashboard_state() -> dict:
         "diagnostic_funnel_rows": compact_rows(funnel_rows, ["stage", "count", "description"], 30),
         "open_trades": compact_rows(sort_if_present(open_trades, "entry_timestamp", ascending=False), trade_cols, 25),
         "stale_open_trades": compact_rows(sort_if_present(stale_open_trades, "entry_timestamp", ascending=False), trade_cols, 25),
+        "nautilus_open_trades": compact_rows(sort_if_present(nautilus_open_trades, "entry_timestamp", ascending=False), trade_cols, 25),
+        "nautilus_stale_open_trades": compact_rows(sort_if_present(nautilus_stale_open_trades, "entry_timestamp", ascending=False), trade_cols, 25),
         "process_focus_rows": compact_rows(
             pd.DataFrame(process_focus_rows),
             ["process_id", "status", "current_balance", "next_stake", "profit_over_start", "step_count", "open_trade_id", "last_result"],
@@ -938,7 +1062,12 @@ def dashboard_state() -> dict:
             ["process_id", "status", "current_balance", "target_balance", "step_count", "wins", "losses", "open_trade_id", "last_result"],
             40,
         ),
-        "resolved_trades": compact_rows(sort_if_present(resolved, "resolved_at", ascending=False), ["win", "loss"] + trade_cols + ["resolved_at", "result", "pnl_usd"], 40),
+        "resolved_trades": compact_rows(sort_if_present(resolved, "resolved_at", ascending=False), ["win", "loss", "sold"] + trade_cols + ["resolved_at", "result", "pnl_usd"], 40),
+        "nautilus_resolved_trades": compact_rows(
+            sort_if_present(nautilus_resolved, "resolved_at", ascending=False),
+            ["win", "loss", "sold"] + trade_cols + ["resolved_at", "result", "pnl_usd"],
+            40,
+        ),
         "live75": compact_rows(live75, match_cols, 30),
         "started": compact_rows(started, match_cols, 30),
         "unconfirmed_started": compact_rows(unconfirmed_started, match_cols + ["status_note"], 50),
@@ -1161,6 +1290,14 @@ def summarize_user_run_method(trades: pd.DataFrame, exits: pd.DataFrame) -> dict
         "full_exit_units": 0.0,
         "exit_50_units": 0.0,
         "liquidity_exit_units": 0.0,
+        "runs_total": 0,
+        "runs_win": 0,
+        "runs_lost": 0,
+        "runs_open": 0,
+        "runs_closed": 0,
+        "sold_pnl_usd": 0.0,
+        "sold_hold_pnl_usd": 0.0,
+        "sold_delta_pnl_usd": 0.0,
     }
     if trades.empty:
         return empty
@@ -1176,6 +1313,7 @@ def summarize_user_run_method(trades: pd.DataFrame, exits: pd.DataFrame) -> dict
     frame["_entry_timestamp"] = pd.to_datetime(frame.get("entry_timestamp", ""), utc=True, errors="coerce")
     frame = frame.sort_values("_entry_timestamp")
     exit_map = build_exit_map(exits)
+    sold_comparison = compare_sold_vs_hold(frame, exits)
     hold_profit, hold_runs = simulate_user_runs(frame, exit_map, "hold", start_capital, target_capital)
     full_profit, full_runs = simulate_user_runs(frame, exit_map, "full", start_capital, target_capital)
     half_profit, half_runs = simulate_user_runs(frame, exit_map, "half", start_capital, target_capital)
@@ -1192,9 +1330,59 @@ def summarize_user_run_method(trades: pd.DataFrame, exits: pd.DataFrame) -> dict
         "runs_win": sum(1 for run in full_runs if run["status"] == "completed"),
         "runs_lost": sum(1 for run in full_runs if run["status"] == "busted"),
         "runs_open": sum(1 for run in full_runs if run["status"] == "ready"),
+        "runs_closed": sold_comparison["sold_trades"],
+        "sold_pnl_usd": sold_comparison["sold_pnl_usd"],
+        "sold_hold_pnl_usd": sold_comparison["sold_hold_pnl_usd"],
+        "sold_delta_pnl_usd": sold_comparison["sold_delta_pnl_usd"],
         "full_exit_runs": full_runs,
     }
     return result
+
+
+def apply_sold_summary(summary: dict[str, object], exit_summary: dict[str, object] | None) -> None:
+    if not exit_summary:
+        summary.update(
+            {
+                "sold_trades": 0,
+                "sold_pnl_usd": 0.0,
+                "sold_hold_pnl_usd": 0.0,
+                "sold_delta_pnl_usd": 0.0,
+            }
+        )
+        return
+    summary.update(
+        {
+            "sold_trades": int(exit_summary.get("resolved_compared", exit_summary.get("triggered", 0)) or 0),
+            "sold_pnl_usd": round(float(exit_summary.get("exit_rule_pnl_usd", 0.0) or 0.0), 4),
+            "sold_hold_pnl_usd": round(float(exit_summary.get("hold_pnl_usd", 0.0) or 0.0), 4),
+            "sold_delta_pnl_usd": round(float(exit_summary.get("delta_pnl_usd", 0.0) or 0.0), 4),
+        }
+    )
+
+
+def compare_sold_vs_hold(trades: pd.DataFrame, exits: pd.DataFrame) -> dict[str, object]:
+    empty = {
+        "sold_trades": 0,
+        "sold_pnl_usd": 0.0,
+        "sold_hold_pnl_usd": 0.0,
+        "sold_delta_pnl_usd": 0.0,
+    }
+    if trades.empty or exits.empty or "trade_id" not in trades.columns or "trade_id" not in exits.columns:
+        return empty
+    frame = exits.drop_duplicates(subset=["trade_id"], keep="first").copy()
+    frame["exit_pnl_usd"] = pd.to_numeric(frame.get("exit_pnl_usd", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+    trade_pnl = trades[["trade_id", "_pnl"]].copy()
+    frame = frame.merge(trade_pnl, on="trade_id", how="inner")
+    if frame.empty:
+        return empty
+    frame["_pnl"] = pd.to_numeric(frame["_pnl"], errors="coerce").fillna(0.0)
+    frame["delta_pnl_usd"] = frame["exit_pnl_usd"] - frame["_pnl"]
+    return {
+        "sold_trades": int(len(frame)),
+        "sold_pnl_usd": round(float(frame["exit_pnl_usd"].sum()), 4),
+        "sold_hold_pnl_usd": round(float(frame["_pnl"].sum()), 4),
+        "sold_delta_pnl_usd": round(float(frame["delta_pnl_usd"].sum()), 4),
+    }
 
 
 def build_exit_map(exits: pd.DataFrame) -> dict[str, dict[str, float | bool]]:

@@ -27,8 +27,8 @@ header {
   top: 0;
   z-index: 2;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
+  grid-template-columns: minmax(340px, 1fr) minmax(460px, 1fr) minmax(460px, 1fr) minmax(360px, 1fr);
+  gap: 18px;
   align-items: flex-start;
   padding: 10px 12px;
   background: rgba(0, 0, 0, 0.97);
@@ -45,8 +45,8 @@ header {
 .header-process {
   min-width: 0;
   padding-top: 4px;
-  justify-self: center;
-  width: fit-content;
+  justify-self: stretch;
+  width: 100%;
   max-width: 100%;
 }
 
@@ -78,7 +78,7 @@ h2 {
   grid-template-columns: repeat(4, minmax(90px, 1fr));
   gap: 5px;
   min-width: 0;
-  max-width: 520px;
+  max-width: 100%;
   justify-self: end;
 }
 
@@ -119,8 +119,9 @@ h2 {
   grid-template-columns: repeat(4, minmax(86px, 104px));
 }
 
-.header-process #process_menu_summary {
-  grid-template-columns: repeat(6, minmax(80px, 104px));
+.header-process #legacy_process_menu_summary,
+.header-process #nautilus_process_menu_summary {
+  grid-template-columns: repeat(4, minmax(112px, 1fr));
   margin-bottom: 26px;
 }
 
@@ -162,6 +163,10 @@ h2 {
 
 .status .metric {
   min-height: 48px;
+}
+
+.status .status-gap {
+  margin-top: 28px;
 }
 
 .status .kpi-win span,

@@ -18,23 +18,39 @@
         </div>
       </div>
     </div>
-    <div class="header-process">
-      <h2>Runs</h2>
-      <div id="process_menu_summary" class="summary-group compact"></div>
+    <div class="header-process header-legacy-runs">
+      <h2>Legacy Runs</h2>
+      <div id="legacy_process_menu_summary" class="summary-group compact"></div>
       <div id="process_run_cards" class="process-grid"></div>
+    </div>
+    <div class="header-process header-nautilus-runs">
+      <h2>Nautilus Runs</h2>
+      <div id="nautilus_process_menu_summary" class="summary-group compact"></div>
     </div>
     <div class="status" id="status"></div>
   </header>
 
   <main>
     <section>
-      <h2>Open Paper Trades</h2>
+      <h2>Legacy Open Paper Trades</h2>
       <div id="open_trades" class="table"></div>
     </section>
 
     <section>
-      <h2>Stale Open Trades</h2>
+      <h2>Nautilus Paper Trades - Comparison</h2>
+      <div id="nautilus_trade_summary" class="summary-grid"></div>
+      <h2>Nautilus Open Paper Trades</h2>
+      <div id="nautilus_open_trades" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Legacy Stale Open Trades</h2>
       <div id="stale_open_trades" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Nautilus Stale Open Trades</h2>
+      <div id="nautilus_stale_open_trades" class="table"></div>
     </section>
 
     <section>
@@ -53,8 +69,13 @@
     </section>
 
     <section>
-      <h2>Resolved Paper Trades</h2>
+      <h2>Legacy Resolved Paper Trades</h2>
       <div id="resolved_trades" class="table"></div>
+    </section>
+
+    <section>
+      <h2>Nautilus Resolved Paper Trades</h2>
+      <div id="nautilus_resolved_trades" class="table"></div>
     </section>
 
     <div hidden>
@@ -84,6 +105,6 @@
     </div>
   </main>
 
-  <script src="/app.js?v=20260507-main-13"></script>
+  <script src="/app.js?v=20260509-runs-4-col-1"></script>
 </body>
 </html>

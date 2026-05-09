@@ -28,12 +28,24 @@ const sections = {
     "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd", "max_stake_usd_at_entry",
     "entry_minute", "entry_score", "period", "entry_reason", "first_hit_99_at", "first_hit_999_at", "max_favorable_price", "status"
   ],
+  nautilus_open_trades: [
+    "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd", "max_stake_usd_at_entry",
+    "entry_minute", "entry_score", "period", "entry_reason", "first_hit_99_at", "first_hit_999_at", "max_favorable_price", "status"
+  ],
   stale_open_trades: [
     "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd", "max_stake_usd_at_entry",
     "entry_minute", "entry_score", "period", "entry_reason", "first_hit_99_at", "first_hit_999_at", "max_favorable_price", "status"
   ],
+  nautilus_stale_open_trades: [
+    "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price", "stake_usd", "max_stake_usd_at_entry",
+    "entry_minute", "entry_score", "period", "entry_reason", "first_hit_99_at", "first_hit_999_at", "max_favorable_price", "status"
+  ],
   resolved_trades: [
-    "win", "loss", "resolved_at", "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price",
+    "win", "loss", "sold", "resolved_at", "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price",
+    "stake_usd", "max_stake_usd_at_entry", "entry_minute", "entry_score", "period", "entry_reason", "result", "pnl_usd", "status"
+  ],
+  nautilus_resolved_trades: [
+    "win", "loss", "sold", "resolved_at", "entry_timestamp", "event_title", "question", "bet_label", "side", "entry_price",
     "stake_usd", "max_stake_usd_at_entry", "entry_minute", "entry_score", "period", "entry_reason", "result", "pnl_usd", "status"
   ],
   live75: [
@@ -196,6 +208,14 @@ function renderStatus(health) {
     { key: "wins", label: "WIN", className: "kpi-win" },
     { key: "losses", label: "LOST", className: "kpi-loss" },
     { key: "resolved" },
+    { key: "ws_tokens", label: "WS tokens", className: "status-gap" },
+    { key: "ws_books", label: "WS books", className: "status-gap" },
+    { key: "ws_price_hits", label: "WS price", className: "status-gap" },
+    { key: "http_price_fallbacks", label: "HTTP price", className: "status-gap" },
+    { key: "nautilus_open_trades", label: "N open" },
+    { key: "nautilus_resolved", label: "N resolved" },
+    { key: "nautilus_wins", label: "WIN" },
+    { key: "nautilus_losses", label: "LOST" },
   ];
   document.getElementById("status").innerHTML = items.map((item) => (
     `<div class="metric ${item.className || ""}"><span>${item.label || label(item.key)}</span><strong>${escapeHtml(statusValue(health, item.key))}</strong></div>`
@@ -203,6 +223,12 @@ function renderStatus(health) {
 }
 
 function statusValue(health, key) {
+  if (key === "nautilus_wins" && health[key] === undefined) {
+    return String((latestData.nautilus_trade_summary || {}).wins ?? 0);
+  }
+  if (key === "nautilus_losses" && health[key] === undefined) {
+    return String((latestData.nautilus_trade_summary || {}).losses ?? 0);
+  }
   const value = health[key] ?? 0;
   if (["run_hold_units", "run_full_exit_units", "run_50_exit_units", "run_liquidity_exit_units"].includes(key)) {
     const number = Number(value);
@@ -213,14 +239,18 @@ function statusValue(health, key) {
 
 function renderSummary(summary) {
   const target = document.getElementById("trade_summary");
-  const resultKeys = ["win_rate", "open_trades", "resolved_trades", "wins", "losses", "pushes", "total_trades"];
+  const resultKeys = [
+    "win_rate", "open_trades", "resolved_trades", "wins", "losses", "pushes", "sold_trades",
+    "sold_pnl_usd", "sold_hold_pnl_usd", "sold_delta_pnl_usd", "total_trades"
+  ];
   if (target) {
     target.innerHTML = resultKeys.map((key) => (
       metricHtml(key, summaryValue(summary, key))
     )).join("");
   }
   renderCapitalMenu(summary);
-  renderProcessMenu(latestData.run_method_summary || {}, latestData.user_run_rows || []);
+  renderProcessMenu("legacy_process_menu_summary", latestData.run_method_summary || {}, latestData.user_run_rows || []);
+  renderProcessMenu("nautilus_process_menu_summary", latestData.nautilus_run_method_summary || {}, []);
 }
 
 function renderCapitalMenu(summary) {
@@ -229,8 +259,9 @@ function renderCapitalMenu(summary) {
   target.innerHTML = keys.map((key) => metricHtml(key, summaryValue(summary, key))).join("");
 }
 
-function renderProcessMenu(runSummary, runs) {
-  const target = document.getElementById("process_menu_summary");
+function renderProcessMenu(targetId, runSummary, runs) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
   const openRuns = Number(runSummary.runs_open || 0);
   const runsWin = Number(runSummary.runs_win || 0);
   const runsLost = Number(runSummary.runs_lost || 0);
@@ -238,12 +269,16 @@ function renderProcessMenu(runSummary, runs) {
     ["open runs", openRuns],
     ["runs win", runsWin],
     ["runs lost", runsLost],
+    ["runs closed", Number(runSummary.runs_closed || 0)],
+    ["sold pnl usd", formatNumber(runSummary.sold_pnl_usd)],
+    ["hold if not sold usd", formatNumber(runSummary.sold_hold_pnl_usd)],
+    ["sold delta usd", formatNumber(runSummary.sold_delta_pnl_usd)],
     ["capital runs", Number(runSummary.runs_total || 0)],
-    ["start capital", formatNumber(runSummary.start_capital)],
-    ["target capital", formatNumber(runSummary.target_capital)],
   ];
   target.innerHTML = items.map(([key, value]) => metricHtml(key, value)).join("");
-  renderProcessRuns(runs);
+  if (targetId === "legacy_process_menu_summary") {
+    renderProcessRuns(runs);
+  }
 }
 
 function renderProcessRuns(runs) {
@@ -416,7 +451,8 @@ function render(data) {
     document.getElementById("updated").textContent =
       `updated=${data.updated_at} latest_snapshot=${data.health.latest_snapshot || "none"} refresh=10s`;
     renderStatus(data.health);
-    renderSummary(data.trade_summary || {});
+  renderSummary(data.trade_summary || {});
+  renderNautilusSummary(data.nautilus_trade_summary || {});
     renderExecution(data.execution_summary || {});
     renderUnderBufferExit(data.under_buffer_exit_summary || {});
     renderGoalCooldown(data.goal_cooldown_summary || {});
@@ -458,6 +494,16 @@ function render(data) {
       unmatched_diagnostic: enrichTimeRows(data.unmatched_diagnostic),
     };
     Object.entries(sections).forEach(([id, columns]) => renderTable(id, viewData[id], columns));
+}
+
+function renderNautilusSummary(summary) {
+  const target = document.getElementById("nautilus_trade_summary");
+  if (!target) return;
+  const keys = [
+    "open_trades", "resolved_trades", "wins", "losses", "sold_trades",
+    "sold_pnl_usd", "sold_hold_pnl_usd", "sold_delta_pnl_usd", "pnl_usd", "win_rate"
+  ];
+  target.innerHTML = keys.map((key) => metricHtml(key, summaryValue(summary, key))).join("");
 }
 
 refresh();
